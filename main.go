@@ -4,10 +4,50 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"time"
 
+	"github.com/faiface/pixel"
+	"github.com/faiface/pixel/imdraw"
+	"github.com/faiface/pixel/pixelgl"
 	"gitlab.com/gomidi/midi/v2/smf"
+	"golang.org/x/image/colornames"
 )
+
+const midiFileName = "IDL main loop.mid"
+
+type MidiNoteType byte
+
+const (
+	NoteOff MidiNoteType = 0x8
+	NoteOn  MidiNoteType = 0x9
+)
+
+type MidiNote struct {
+	deltaTime int
+	eventType MidiNoteType
+	channel   byte
+	note      byte
+	velocity  byte
+}
+
+type MidiTrack struct {
+	notes []MidiNote
+}
+
+type Note struct {
+	on  int
+	off int
+	num int
+	str string
+	vel int
+}
+
+type Track struct {
+	bpm   int
+	notes []Note
+}
 
 func check(e error) {
 	if e != nil {
@@ -50,9 +90,23 @@ func readVariableLengthValue2(dat io.Reader) (result int) {
 	return result
 }
 
-func diy() {
+func NewMidiTrack() *MidiTrack {
+
+	return &MidiTrack{
+		notes: []MidiNote{},
+	}
+}
+
+func NewTrack() *Track {
+
+	return &Track{
+		notes: []Note{},
+	}
+}
+
+func diy() *Track {
 	// Reference: https://midimusic.github.io/tech/midispec.html
-	dat, err := os.Open("test1.mid")
+	dat, err := os.Open(midiFileName)
 	check(err)
 	// fmt.Println(string(dat))
 
@@ -126,6 +180,7 @@ func diy() {
 	// <event> = <MIDI event> | <sysex event> | <meta-event>
 	// Print only note on and note offf midi events and their data as well as delta time events
 	// eventsRemaining := 6
+	midiTrack := NewMidiTrack()
 	done := false
 	for !done {
 		// eventsRemaining--
@@ -194,6 +249,20 @@ func diy() {
 					fmt.Println("  Denominator:", denominator[0])
 					break
 				}
+			case 0x51:
+				{
+					fmt.Printf("Meta Event Type: %x (Set Tempo)\n", metaEventType[0])
+					if metaEventLength != 3 {
+						panic("Invalid Set Tempo Length")
+					}
+
+					mpqn := make([]byte, 3)
+					_, err = dat.Read(mpqn)
+					check(err)
+					microSecondsPerQuarterNoteInt := uint32(mpqn[0])<<16 | uint32(mpqn[1])<<8 | uint32(mpqn[2])
+					fmt.Println("  Microseconds Per Quarter Note:", microSecondsPerQuarterNoteInt)
+					break
+				}
 			default:
 				fmt.Printf("Meta Event Type: %x\n", metaEventType[0])
 				fmt.Println("Meta Event Length:", metaEventLength)
@@ -235,6 +304,14 @@ func diy() {
 					check(err)
 					fmt.Println("  Note:", note[0], noteNumberToString(note[0]))
 					fmt.Println("  Velocity:", velocity[0])
+
+					midiTrack.notes = append(midiTrack.notes, MidiNote{
+						deltaTime: deltaTime,
+						eventType: NoteOff,
+						channel:   0,
+						note:      note[0],
+						velocity:  velocity[0],
+					})
 					break
 				}
 			case 0x9:
@@ -248,15 +325,115 @@ func diy() {
 					check(err)
 					fmt.Println("  Note:", note[0], noteNumberToString(note[0]))
 					fmt.Println("  Velocity:", velocity[0])
+
+					midiTrack.notes = append(midiTrack.notes, MidiNote{
+						deltaTime: deltaTime,
+						eventType: NoteOn,
+						channel:   0,
+						note:      note[0],
+						velocity:  velocity[0],
+					})
 					break
 				}
 			}
 		}
 	}
+
+	track := NewTrack()
+	deltaTotal := 0
+	noteOnMap := make(map[byte]Note)
+	for _, midiNote := range midiTrack.notes {
+		deltaTotal += midiNote.deltaTime
+
+		if midiNote.eventType == NoteOn {
+			noteOnMap[midiNote.note] = Note{
+				on:  deltaTotal,
+				off: -1,
+				num: int(midiNote.note),
+				str: noteNumberToString(midiNote.note),
+				vel: int(midiNote.velocity),
+			}
+		} else if midiNote.eventType == NoteOff {
+			if foundNote, ok := noteOnMap[midiNote.note]; ok {
+				foundNote.off = deltaTotal
+				track.notes = append(track.notes, foundNote)
+				delete(noteOnMap, midiNote.note)
+			} else {
+				fmt.Println("Note Off without Note On")
+			}
+		}
+	}
+
+	// for _, note := range track.notes {
+	// 	fmt.Printf("Note: %s %d %d %d\n", note.str, note.on, note.off, note.vel)
+	// }
+
+	return track
+}
+
+func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppqn int) int {
+	// Convert microseconds per quarter note to seconds per tick
+	secondsPerTick := float64(microSecondsPerQuarterNote) / (1000000.0 * float64(ppqn))
+
+	// Calculate delta time in ticks
+	deltaTime := elapsedTime / secondsPerTick
+
+	// Round to the nearest integer (since delta time must be an integer value in MIDI)
+	return int(math.Round(deltaTime))
+}
+
+func render(t *Track) {
+	const width = 1024
+	const height = 768
+	const noteHeight = height / 128
+
+	// PPQN is the number of ticks per quarter note
+	// hardcoded for now, but we can get from midi header (division)
+	const ppqn = 480
+	// Hardcoded for now, but we can get from midi as a tempo type event
+	const microSecondsPerQuarterNote = 375000
+	run := func() {
+		cfg := pixelgl.WindowConfig{
+			Title:  "Ted is v cool!",
+			Bounds: pixel.R(0, 0, width, height),
+			VSync:  true,
+		}
+		win, err := pixelgl.NewWindow(cfg)
+		if err != nil {
+			panic(err)
+		}
+
+		imd := imdraw.New(nil)
+
+		fps30 := time.Tick(time.Second / 30)
+		start := time.Now()
+		for !win.Closed() {
+			elapsedSeconds := time.Since(start).Seconds()
+			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
+			win.Clear(colornames.Aliceblue)
+			imd.Clear()
+			imd.Reset()
+			for _, note := range t.notes {
+				// fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+				imd.Color = colornames.Black
+				noteY := noteHeight * note.num
+				// bottom left point
+				imd.Push(pixel.V(float64(note.on-elapsedDeltaTime), float64(noteY)))
+				// top right point
+				imd.Push(pixel.V(float64(note.off-elapsedDeltaTime), float64(noteY+noteHeight)))
+				imd.Rectangle(0)
+			}
+			imd.Draw(win)
+			win.Update()
+			<-fps30
+		}
+	}
+
+	pixelgl.Run(run)
 }
 
 func pkg() {
-	reader, err := smf.ReadFile("test1.mid")
+	reader, err := smf.ReadFile(midiFileName)
 	if err != nil {
 		panic(err)
 	}
@@ -276,7 +453,8 @@ func main() {
 	if len(argsWithoutProg) == 0 || argsWithoutProg[0] == "pkg" {
 		pkg()
 	} else if argsWithoutProg[0] == "diy" {
-		diy()
+		track := diy()
+		render(track)
 	} else {
 		fmt.Println("Invalid command")
 	}
