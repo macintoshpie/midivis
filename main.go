@@ -35,25 +35,6 @@ func noteNumberToString(noteNumber byte) string {
 	return fmt.Sprintf("%s%d", notes[note], octave)
 }
 
-func readVariableLengthValue(d []byte, start int) (result int, offset int) {
-	result = 0
-	i := start
-	for i < len(d) {
-		// add the lower 7 bits of the current byte to the result
-		result = (result << 7) | int(d[i]&0x7F)
-
-		// if bit 7 is not set, this is the last byte of the value
-		if d[i]&0x80 == 0 {
-			break
-		}
-
-		i++
-	}
-
-	// return result, i + 1 - start
-	return result, i + 1
-}
-
 func readVariableLengthValue2(dat io.Reader) (result int) {
 	result = 0
 	for {
@@ -272,87 +253,6 @@ func diy() {
 			}
 		}
 	}
-
-	// // <MTrk event> = <delta-time><event>
-	// // <delta-time> is stored as a variable-length quantity.
-	// // It represents the amount of time before the following event.
-	// // 	If the first event in a track occurs at the very beginning of a track, or if two events occur simultaneously, a delta-time of zero is used. Delta-times are always present.
-	// // (Not storing delta-times of 0 requires at least two bytes for any other value, and most delta-times aren't zero.)
-	// // Delta-time is in some fraction of a beat (or a second, for recording a track with SMPTE times), as specified in the header chunk.
-	// // <event> = <MIDI event> | <sysex event> | <meta-event>
-	// // Print only note on and note offf midi events and their data as well as delta time events
-	// i := 22
-	// eventsToRead := 3
-	// for i < len(dat) && eventsToRead > 0 {
-	// 	eventsToRead--
-	// 	fmt.Println("------- EVENT -------")
-
-	// 	deltaTime, offset := readVariableLengthValue(dat, i)
-	// 	fmt.Println("Delta Time:", deltaTime)
-	// 	fmt.Println("Offset:", offset)
-	// 	// i += offset
-	// 	i = offset
-	// 	if i >= len(dat) {
-	// 		break
-	// 	}
-
-	// 	fmt.Printf("Event first byte: %x\n", dat[i])
-
-	// 	if dat[i] == 0xFF {
-	// 		// <meta-event> = 0xFF<type><length><data>
-	// 		metaEventType := dat[i+1]
-	// 		metaEventLength, offset := readVariableLengthValue(dat, i+2)
-	// 		fmt.Printf("Meta Event Type: %x\n", metaEventType)
-	// 		fmt.Println("Meta Event Length:", metaEventLength)
-	// 		// i += offset + 2
-	// 		i = offset
-	// 	} else if dat[i] == 0xF0 || dat[i] == 0xF7 {
-	// 		// <sysex event> = 0xF0<length><data> or 0xF7<length><data>
-	// 		sysexEventLength, offset := readVariableLengthValue(dat, i+1)
-	// 		fmt.Println("Sysex Event Length:", sysexEventLength)
-	// 		// i += offset + 1
-	// 		i = offset
-	// 	} else {
-	// 		// <MIDI event> = <MIDI event type><channel><data>
-	// 		// <MIDI event type> = <MIDI event type (4 bits)><MIDI channel (4 bits)>
-	// 		// <MIDI event type> = 0x8 for note off, 0x9 for note on
-	// 		midiEventType := dat[i]
-	// 		fmt.Printf("RAW MIDI Event Type: %x\n", midiEventType)
-	// 		i += 1
-	// 		// midiChannel := midiEventType & 0x0F
-	// 		midiEventType = midiEventType >> 4
-
-	// 		switch midiEventType {
-	// 		case 0x8:
-	// 			{
-	// 				fmt.Println("MIDI Event Type: Note Off")
-	// 				i++
-	// 				// <data> = <note><velocity>
-	// 				note := dat[i]
-	// 				velocity := dat[i+1]
-	// 				fmt.Println("  Note:", note, noteNumberToString(note))
-	// 				fmt.Println("  Velocity:", velocity)
-	// 				i += 2
-	// 				break
-	// 			}
-	// 		case 0x9:
-	// 			{
-	// 				fmt.Println("MIDI Event Type: Note On")
-	// 				i++
-	// 				// <data> = <note><velocity>
-	// 				note := dat[i]
-	// 				velocity := dat[i+1]
-	// 				fmt.Println("  Note:", note, noteNumberToString(note))
-	// 				fmt.Println("  Velocity:", velocity)
-	// 				i += 2
-	// 				break
-	// 			}
-	// 		default:
-	// 			fmt.Printf("Unhandled MIDI Event Type: %x\n", midiEventType)
-	// 			// panic("Unhandled MIDI Event Type")
-	// 		}
-	// 	}
-	// }
 }
 
 func pkg() {
