@@ -420,12 +420,12 @@ func render(t *Track) {
 			}
 
 			// draw some lines for notes
-			for i := 0; i < 128; i++ {
-				imd.Color = colornames.Black
-				imd.Push(pixel.V(0, float64(i*noteHeight)))
-				imd.Push(pixel.V(width, float64(i*noteHeight)))
-				imd.Line(1)
-			}
+			// for i := 0; i < 128; i++ {
+			// 	imd.Color = colornames.Black
+			// 	imd.Push(pixel.V(0, float64(i*noteHeight)))
+			// 	imd.Push(pixel.V(width, float64(i*noteHeight)))
+			// 	imd.Line(1)
+			// }
 
 			elapsedSeconds := time.Since(start).Seconds()
 			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
