@@ -392,6 +392,9 @@ func render(t *Track) {
 	const ppqn = 480
 	// Hardcoded for now, but we can get from midi as a tempo type event
 	const microSecondsPerQuarterNote = 375000
+
+	const xScale = 0.25
+	const xTranslate = width / 2
 	run := func() {
 		cfg := pixelgl.WindowConfig{
 			Title:  "Ted is v cool!",
@@ -408,21 +411,53 @@ func render(t *Track) {
 		fps30 := time.Tick(time.Second / 30)
 		start := time.Now()
 		for !win.Closed() {
-			elapsedSeconds := time.Since(start).Seconds()
-			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
-			win.Clear(colornames.Aliceblue)
+			win.Clear(colornames.Violet)
 			imd.Clear()
 			imd.Reset()
+
+			if win.Pressed(pixelgl.KeySpace) {
+				start = time.Now()
+			}
+
+			// draw some lines for notes
+			for i := 0; i < 128; i++ {
+				imd.Color = colornames.Black
+				imd.Push(pixel.V(0, float64(i*noteHeight)))
+				imd.Push(pixel.V(width, float64(i*noteHeight)))
+				imd.Line(1)
+			}
+
+			elapsedSeconds := time.Since(start).Seconds()
+			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
+
 			for _, note := range t.notes {
 				// fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
-				imd.Color = colornames.Black
+
 				noteY := noteHeight * note.num
+				isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
+				if isBeingPlayed {
+					// fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
+
+					imd.Color = colornames.White
+				} else {
+					imd.Color = colornames.Black
+				}
 				// bottom left point
-				imd.Push(pixel.V(float64(note.on-elapsedDeltaTime), float64(noteY)))
+				imd.Push(pixel.V(float64((note.on-elapsedDeltaTime))*xScale+xTranslate, float64(noteY)))
 				// top right point
-				imd.Push(pixel.V(float64(note.off-elapsedDeltaTime), float64(noteY+noteHeight)))
-				imd.Rectangle(0)
+				imd.Push(pixel.V(float64((note.off-elapsedDeltaTime))*xScale+xTranslate, float64(noteY+noteHeight)))
+				if isBeingPlayed {
+					imd.Rectangle(0)
+				} else {
+					imd.Rectangle(2)
+				}
 			}
+
+			// vertical line in center
+			imd.Color = colornames.White
+			imd.Push(pixel.V(width/2, height), pixel.V(width/2, 0))
+			imd.Line(2)
+
 			imd.Draw(win)
 			win.Update()
 			<-fps30
