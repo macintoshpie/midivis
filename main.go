@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"image/color"
 	"io"
 	"math"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/faiface/pixel"
@@ -382,10 +384,73 @@ func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppq
 	return int(math.Round(deltaTime))
 }
 
-func render(t *Track) {
+func renderTrack(t *Track, imd *imdraw.IMDraw, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
+	for _, note := range t.notes {
+
+		// fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+
+		noteY := noteHeight*(note.num-noteMin) + noteTopBottomPaddingPixels
+		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
+
+		// draw a circle behind it if it's being played
+		// if isBeingPlayed {
+		// 	fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
+		// 	// semiTransparent := pixel.RGB(0, 0, 0).Mul(pixel.Alpha(fractionRemaining))
+		// 	imd.Color = pixel.RGB(float64(accentColor.R), float64(accentColor.G), float64(accentColor.B)).Mul(pixel.Alpha(fractionRemaining - 0.2))
+		// 	imd.Push(pixel.V(width/2, float64(noteY)))
+		// 	imd.Circle(50, 0)
+		// }
+
+		if isBeingPlayed {
+			// fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
+
+			imd.Color = foregroundColor
+		} else {
+			imd.Color = foregroundColor
+		}
+		// bottom left point
+		imd.Push(pixel.V(float64((note.on-elapsedDeltaTime))*xScale+xTranslate, float64(noteY)))
+		// top right point
+		imd.Push(pixel.V(float64((note.off-elapsedDeltaTime))*xScale+xTranslate, float64(noteY+noteHeight)))
+		if isBeingPlayed {
+			imd.Rectangle(0)
+		} else {
+			imd.Rectangle(2)
+		}
+
+	}
+}
+
+func renderAll(t *Track) {
 	const width = 1024
 	const height = 768
-	const noteHeight = height / 128
+
+	const oscillateColors = false
+
+	// Use noteTopBottomPaddingPixels to adjust the padding at the top and bottom of screen for notes
+	const noteTopBottomPaddingPixels = 100
+
+	// Use Normalize and/or noteMin/noteMax to adjust the range of notes displayed
+	const normalize = true
+	noteMin := 0
+	noteMax := 127
+	if normalize {
+		sortedNotes := make([]Note, len(t.notes))
+		copy(sortedNotes, t.notes)
+		sort.Slice(sortedNotes, func(i, j int) bool {
+			return sortedNotes[i].num < sortedNotes[j].num
+		})
+
+		fmt.Println("Sorted Notes:")
+		for _, note := range sortedNotes {
+			fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+		}
+
+		noteMin = sortedNotes[0].num
+		noteMax = sortedNotes[len(sortedNotes)-1].num
+	}
+
+	noteHeight := (height - noteTopBottomPaddingPixels*2) / (noteMax - noteMin)
 
 	// PPQN is the number of ticks per quarter note
 	// hardcoded for now, but we can get from midi header (division)
@@ -393,7 +458,10 @@ func render(t *Track) {
 	// Hardcoded for now, but we can get from midi as a tempo type event
 	const microSecondsPerQuarterNote = 375000
 
-	const xScale = 0.25
+	// Use xScale to adjust the horizontal scaling of the notes
+	const xScale = 0.5
+
+	// Use xTranslate to adjust the horizontal translation of the notes (e.g. where the note-on should be occur)
 	const xTranslate = width / 2
 	run := func() {
 		cfg := pixelgl.WindowConfig{
@@ -410,8 +478,13 @@ func render(t *Track) {
 
 		fps30 := time.Tick(time.Second / 30)
 		start := time.Now()
+		nextMeasureDeltaTime := 0
+
+		backgroundColor := colornames.Violet
+		foregroundColor := colornames.White
+		// accentColor := colornames.Black
 		for !win.Closed() {
-			win.Clear(colornames.Violet)
+			win.Clear(backgroundColor)
 			imd.Clear()
 			imd.Reset()
 
@@ -430,31 +503,20 @@ func render(t *Track) {
 			elapsedSeconds := time.Since(start).Seconds()
 			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
 
-			for _, note := range t.notes {
-				// fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+			if elapsedDeltaTime > nextMeasureDeltaTime && oscillateColors {
+				nextMeasureDeltaTime += ppqn
 
-				noteY := noteHeight * note.num
-				isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
-				if isBeingPlayed {
-					// fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
-
-					imd.Color = colornames.White
-				} else {
-					imd.Color = colornames.Black
-				}
-				// bottom left point
-				imd.Push(pixel.V(float64((note.on-elapsedDeltaTime))*xScale+xTranslate, float64(noteY)))
-				// top right point
-				imd.Push(pixel.V(float64((note.off-elapsedDeltaTime))*xScale+xTranslate, float64(noteY+noteHeight)))
-				if isBeingPlayed {
-					imd.Rectangle(0)
-				} else {
-					imd.Rectangle(2)
-				}
+				tmp := backgroundColor
+				backgroundColor = foregroundColor
+				foregroundColor = tmp
 			}
 
+			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, foregroundColor)
+			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.Gray)
+			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/4, xTranslate, colornames.Black)
+
 			// vertical line in center
-			imd.Color = colornames.White
+			imd.Color = foregroundColor
 			imd.Push(pixel.V(width/2, height), pixel.V(width/2, 0))
 			imd.Line(2)
 
@@ -489,7 +551,7 @@ func main() {
 		pkg()
 	} else if argsWithoutProg[0] == "diy" {
 		track := diy()
-		render(track)
+		renderAll(track)
 	} else {
 		fmt.Println("Invalid command")
 	}
