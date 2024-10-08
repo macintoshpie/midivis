@@ -548,36 +548,7 @@ func renderAll(tracks []*Track, logger *slog.Logger) {
 			panic(err)
 		}
 
-		const fragmentShader = `
-		#version 330 core
-		
-		// in vec4  vColor;
-		in vec2  vTexCoords;
-		// in float vIntensity;
-		// in vec4  vClipRect;
-		
-		out vec4 fragColor;
-		
-		// uniform vec4 uColorMask;
-		uniform vec4 uTexBounds;
-		uniform sampler2D uTexture;
-		
-		void main() {
-			fragColor = vec4(1, 0, 0, 0);
-			// vec2 t = (vTexCoords - uTexBounds.xy) / uTexBounds.zw;
-			// fragColor += vIntensity * vColor * texture(uTexture, t);
-			// fragColor *= uColorMask;
-		}
-		`
-
-		// win.Canvas().SetFragmentShader(fragmentShader)
-
 		imd := imdraw.New(nil)
-
-		shaderImd := imdraw.New(nil)
-		shaderCanvas := pixelgl.NewCanvas(win.Bounds())
-		shaderCanvas.SetFragmentShader(fragmentShader)
-		// shaderCanvas.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
 
 		fps := time.Tick(time.Second / 60)
 		start := time.Now()
@@ -613,8 +584,6 @@ func renderAll(tracks []*Track, logger *slog.Logger) {
 			win.Clear(backgroundColor)
 			imd.Clear()
 			imd.Reset()
-			shaderImd.Clear()
-			shaderCanvas.Clear(pixel.RGB(0, 0, 0).Mul(pixel.Alpha(0)))
 
 			if win.JustReleased(pixelgl.KeySpace) {
 				start = time.Now()
@@ -695,14 +664,12 @@ func renderAll(tracks []*Track, logger *slog.Logger) {
 			// measure lines
 			for i := 0; i < 200; i++ {
 				if i%4 == 0 {
-					shaderImd.Color = foregroundColor
-					shaderImd.Push(pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, height), pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, 0))
-					shaderImd.Line(1)
+					imd.Color = foregroundColor
+					imd.Push(pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, height), pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, 0))
+					imd.Line(1)
 				}
 			}
 
-			shaderImd.Draw(shaderCanvas)
-			shaderCanvas.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
 			imd.Draw(win)
 
 			win.Update()
