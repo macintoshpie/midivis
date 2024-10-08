@@ -5,19 +5,41 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/ebitengine/oto/v3"
 	"github.com/faiface/pixel"
 	"github.com/faiface/pixel/imdraw"
 	"github.com/faiface/pixel/pixelgl"
+	"github.com/hajimehoshi/go-mp3"
 	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
 )
 
-const midiFileName = "IDL main loop.mid"
+// const midiFileName = "IDL main loop.mid"
+const midiFileName = "sonatas_k-417_(c)sankey.mid"
+
+// PPQN is the number of ticks per quarter note
+// hardcoded for now, but we can get from midi header (division)
+// IDL
+const ppqn = 96
+
+// Sonata
+// const ppqn = 384
+
+// Hardcoded for now, but we can get from midi as a tempo type event
+// IDL
+const microSecondsPerQuarterNote = 375000
+
+// Sonata
+// const microSecondsPerQuarterNote = 465000 // was originally 500000 but messed with it to get close to matching https://www.youtube.com/watch?v=OJ1p6hD-Df0
+
+const debug = false
 
 type MidiNoteType byte
 
@@ -106,30 +128,30 @@ func NewTrack() *Track {
 	}
 }
 
-func diy() *Track {
+func diy(logger *slog.Logger, fileName string) *Track {
 	// Reference: https://midimusic.github.io/tech/midispec.html
-	dat, err := os.Open(midiFileName)
+	dat, err := os.Open(fileName)
 	check(err)
-	// fmt.Println(string(dat))
+	// logger.Info(string(dat))
 
 	// first 4 bytes (32 bits) are the header type in ascii
 	headerBytes := make([]byte, 4)
 	_, err = dat.Read(headerBytes)
 	check(err)
-	fmt.Println("Header Type:", string(headerBytes))
+	logger.Info("Header Type:", string(headerBytes))
 
 	// length is the next 4 bytes (32 bits) in big endian
 	lengthBytes := make([]byte, 4)
 	_, err = dat.Read(lengthBytes)
 	lengthInt := binary.BigEndian.Uint32(lengthBytes)
-	fmt.Println("Length:", lengthInt)
+	logger.Info("Length:", lengthInt)
 
 	// -- Data Section --
 	// format is the next 2 bytes (16 bits) in big endian
 	formatBytes := make([]byte, 2)
 	_, err = dat.Read(formatBytes)
 	formatInt := binary.BigEndian.Uint16(formatBytes)
-	fmt.Println("Format:", formatInt)
+	logger.Info("Format:", formatInt)
 	if formatInt != 0 {
 		panic("Format not supported")
 	}
@@ -138,7 +160,7 @@ func diy() *Track {
 	nTracksBytes := make([]byte, 2)
 	_, err = dat.Read(nTracksBytes)
 	nTracksInt := binary.BigEndian.Uint16(nTracksBytes)
-	fmt.Println("NTracks:", nTracksInt)
+	logger.Info("NTracks:", nTracksInt)
 
 	// division is the next 2 bytes (16 bits) in big endian
 	// if the first bit is 0, the remaining 15 bits represent the number of ticks quarter note
@@ -146,16 +168,16 @@ func diy() *Track {
 	// if the first bit is 1, the remaining 15 bits represent the number of ticks per frame
 	divisionTypeBytes := make([]byte, 2)
 	_, err = dat.Read(divisionTypeBytes)
-	fmt.Println("Division Type:", divisionTypeBytes[0])
+	logger.Info("Division Type:", divisionTypeBytes[0])
 
 	if divisionTypeBytes[0]&0x80 == 0 {
 		division := binary.BigEndian.Uint16(divisionTypeBytes)
-		fmt.Println("Division (Ticks per Quarter Note):", division)
+		logger.Info("Division (Ticks per Quarter Note):", division)
 	} else {
 		// just panic for now
 		panic("Division Type not supported")
 		// division := binary.BigEndian.Uint16(dat[12:14])
-		// fmt.Println("Division (Ticks per Frame):", division)
+		// logger.Info("Division (Ticks per Frame):", division)
 	}
 
 	// -- Track Section --
@@ -164,13 +186,13 @@ func diy() *Track {
 	// track header is the next 4 bytes (32 bits) in ascii
 	trackHeaderBytes := make([]byte, 4)
 	_, err = dat.Read(trackHeaderBytes)
-	fmt.Println("Track Header:", string(trackHeaderBytes))
+	logger.Info("Track Header:", string(trackHeaderBytes))
 
 	// track length is the next 4 bytes (32 bits) in big endian
 	trackLengthBytes := make([]byte, 4)
 	_, err = dat.Read(trackLengthBytes)
 	trackLengthInt := binary.BigEndian.Uint32(trackLengthBytes)
-	fmt.Println("Track Length:", trackLengthInt)
+	logger.Info("Track Length:", trackLengthInt)
 
 	// read track data in the format:
 	// <MTrk event> = <delta-time><event>
@@ -186,15 +208,15 @@ func diy() *Track {
 	done := false
 	for !done {
 		// eventsRemaining--
-		fmt.Println("------- EVENT -------")
+		logger.Debug("------- EVENT -------")
 		deltaTime := readVariableLengthValue2(dat)
-		fmt.Println("Delta Time:", deltaTime)
+		logger.Debug("Delta Time:", deltaTime)
 
 		// <event> = <MIDI event> | <sysex event> | <meta-event>
 		eventFirstByte := make([]byte, 1)
 		_, err = dat.Read(eventFirstByte)
 		check(err)
-		fmt.Printf("Event first byte: %x\n", eventFirstByte[0])
+		logger.Debug("Event first byte: %x\n", eventFirstByte[0])
 
 		if eventFirstByte[0] == 0xFF {
 			// <meta-event> = 0xFF<type><length><data>
@@ -210,14 +232,14 @@ func diy() *Track {
 					trackName := make([]byte, metaEventLength)
 					_, err = dat.Read(trackName)
 					check(err)
-					fmt.Printf("Meta Event Type: %s (Track Name)\n", trackName)
-					fmt.Println("  Track Name:", string(trackName))
+					logger.Debug("Meta Event Type: %s (Track Name)\n", trackName)
+					logger.Debug("  Track Name:", string(trackName))
 
 					break
 				}
 			case 0x2F:
 				{
-					fmt.Printf("Meta Event Type: %x (End of Track)\n", metaEventType[0])
+					logger.Debug("Meta Event Type: %x (End of Track)\n", metaEventType[0])
 					if metaEventLength != 0 {
 						panic("Invalid End of Track Length")
 					}
@@ -230,7 +252,7 @@ func diy() *Track {
 				}
 			case 0x58:
 				{
-					fmt.Printf("Meta Event Type: %x (Time Signature)\n", metaEventType[0])
+					logger.Debug("Meta Event Type: %x (Time Signature)\n", metaEventType[0])
 					if metaEventLength != 4 {
 						panic("Invalid Time Signature Length")
 					}
@@ -247,13 +269,13 @@ func diy() *Track {
 					bb := make([]byte, 1)
 					_, err = dat.Read(bb)
 					check(err)
-					fmt.Println("  Numerator:", numerator[0])
-					fmt.Println("  Denominator:", denominator[0])
+					logger.Debug("  Numerator:", numerator[0])
+					logger.Debug("  Denominator:", denominator[0])
 					break
 				}
 			case 0x51:
 				{
-					fmt.Printf("Meta Event Type: %x (Set Tempo)\n", metaEventType[0])
+					logger.Debug("Meta Event Type: %x (Set Tempo)\n", metaEventType[0])
 					if metaEventLength != 3 {
 						panic("Invalid Set Tempo Length")
 					}
@@ -262,12 +284,12 @@ func diy() *Track {
 					_, err = dat.Read(mpqn)
 					check(err)
 					microSecondsPerQuarterNoteInt := uint32(mpqn[0])<<16 | uint32(mpqn[1])<<8 | uint32(mpqn[2])
-					fmt.Println("  Microseconds Per Quarter Note:", microSecondsPerQuarterNoteInt)
+					logger.Info("  Microseconds Per Quarter Note:", microSecondsPerQuarterNoteInt)
 					break
 				}
 			default:
-				fmt.Printf("Meta Event Type: %x\n", metaEventType[0])
-				fmt.Println("Meta Event Length:", metaEventLength)
+				logger.Debug("Meta Event Type: %x\n", metaEventType[0])
+				logger.Debug("Meta Event Length:", metaEventLength)
 
 				// consume the data even though we don't use it now
 				metaEventData := make([]byte, metaEventLength)
@@ -275,11 +297,11 @@ func diy() *Track {
 				check(err)
 			}
 
-			// fmt.Println("Meta Event Data:", string(metaEventData))
+			// logger.Debug("Meta Event Data:", string(metaEventData))
 		} else if eventFirstByte[0] == 0xF0 || eventFirstByte[0] == 0xF7 {
 			// <sysex event> = 0xF0<length><data> or 0xF7<length><data>
 			sysexEventLength := readVariableLengthValue2(dat)
-			fmt.Println("Sysex Event Length:", sysexEventLength)
+			logger.Debug("Sysex Event Length:", sysexEventLength)
 			// consume the data even though we don't use it now
 			sysexEventData := make([]byte, sysexEventLength)
 			_, err = dat.Read(sysexEventData)
@@ -289,7 +311,7 @@ func diy() *Track {
 			// <MIDI event type> = <MIDI event type (4 bits)><MIDI channel (4 bits)>
 			// <MIDI event type> = 0x8 for note off, 0x9 for note on
 			midiEventType := eventFirstByte[0]
-			fmt.Printf("RAW MIDI Event Type: %x\n", midiEventType)
+			logger.Debug("RAW MIDI Event Type: %x\n", midiEventType)
 
 			// midiChannel := midiEventType & 0x0F
 			midiEventType = midiEventType >> 4
@@ -297,15 +319,15 @@ func diy() *Track {
 			switch midiEventType {
 			case 0x8:
 				{
-					fmt.Println("MIDI Event Type: Note Off")
+					logger.Debug("MIDI Event Type: Note Off")
 					note := make([]byte, 1)
 					_, err = dat.Read(note)
 					check(err)
 					velocity := make([]byte, 1)
 					_, err = dat.Read(velocity)
 					check(err)
-					fmt.Println("  Note:", note[0], noteNumberToString(note[0]))
-					fmt.Println("  Velocity:", velocity[0])
+					logger.Debug("  Note:", note[0], noteNumberToString(note[0]))
+					logger.Debug("  Velocity:", velocity[0])
 
 					midiTrack.notes = append(midiTrack.notes, MidiNote{
 						deltaTime: deltaTime,
@@ -318,15 +340,15 @@ func diy() *Track {
 				}
 			case 0x9:
 				{
-					fmt.Println("MIDI Event Type: Note On")
+					logger.Debug("MIDI Event Type: Note On")
 					note := make([]byte, 1)
 					_, err = dat.Read(note)
 					check(err)
 					velocity := make([]byte, 1)
 					_, err = dat.Read(velocity)
 					check(err)
-					fmt.Println("  Note:", note[0], noteNumberToString(note[0]))
-					fmt.Println("  Velocity:", velocity[0])
+					logger.Debug("  Note:", note[0], noteNumberToString(note[0]))
+					logger.Debug("  Velocity:", velocity[0])
 
 					midiTrack.notes = append(midiTrack.notes, MidiNote{
 						deltaTime: deltaTime,
@@ -361,14 +383,10 @@ func diy() *Track {
 				track.notes = append(track.notes, foundNote)
 				delete(noteOnMap, midiNote.note)
 			} else {
-				fmt.Println("Note Off without Note On")
+				logger.Info("Note Off without Note On")
 			}
 		}
 	}
-
-	// for _, note := range track.notes {
-	// 	fmt.Printf("Note: %s %d %d %d\n", note.str, note.on, note.off, note.vel)
-	// }
 
 	return track
 }
@@ -386,9 +404,6 @@ func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppq
 
 func renderTrack(t *Track, imd *imdraw.IMDraw, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
 	for _, note := range t.notes {
-
-		// fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
-
 		noteY := noteHeight*(note.num-noteMin) + noteTopBottomPaddingPixels
 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
 
@@ -421,7 +436,7 @@ func renderTrack(t *Track, imd *imdraw.IMDraw, elapsedDeltaTime int, noteMin int
 	}
 }
 
-func renderAll(t *Track) {
+func renderAll(tracks []*Track, logger *slog.Logger) {
 	const width = 1024
 	const height = 768
 
@@ -435,34 +450,93 @@ func renderAll(t *Track) {
 	noteMin := 0
 	noteMax := 127
 	if normalize {
-		sortedNotes := make([]Note, len(t.notes))
-		copy(sortedNotes, t.notes)
-		sort.Slice(sortedNotes, func(i, j int) bool {
-			return sortedNotes[i].num < sortedNotes[j].num
-		})
-
-		fmt.Println("Sorted Notes:")
-		for _, note := range sortedNotes {
-			fmt.Printf("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+		allNotes := make([]Note, 0)
+		for _, t := range tracks {
+			allNotes = append(allNotes, t.notes...)
 		}
 
-		noteMin = sortedNotes[0].num
-		noteMax = sortedNotes[len(sortedNotes)-1].num
+		sort.Slice(allNotes, func(i, j int) bool {
+			return allNotes[i].num < allNotes[j].num
+		})
+
+		logger.Debug("Sorted Notes:")
+		for _, note := range allNotes {
+			logger.Debug("Note: %d %d %d %d\n", note.num, note.on, note.off, note.vel)
+		}
+
+		noteMin = allNotes[0].num
+		noteMax = allNotes[len(allNotes)-1].num
 	}
 
 	noteHeight := (height - noteTopBottomPaddingPixels*2) / (noteMax - noteMin)
-
-	// PPQN is the number of ticks per quarter note
-	// hardcoded for now, but we can get from midi header (division)
-	const ppqn = 480
-	// Hardcoded for now, but we can get from midi as a tempo type event
-	const microSecondsPerQuarterNote = 375000
 
 	// Use xScale to adjust the horizontal scaling of the notes
 	const xScale = 0.5
 
 	// Use xTranslate to adjust the horizontal translation of the notes (e.g. where the note-on should be occur)
 	const xTranslate = width / 2
+
+	// Audio setup
+	file, err := os.Open("A. G. Cook - Idyll.mp3")
+	if err != nil {
+		panic("opening my-file.mp3 failed: " + err.Error())
+	}
+
+	// Decode file. This process is done as the file plays so it won't
+	// load the whole thing into memory.
+	decodedMp3, err := mp3.NewDecoder(file)
+	if err != nil {
+		panic("mp3.NewDecoder failed: " + err.Error())
+	}
+
+	// Prepare an Oto context (this will use your default audio device) that will
+	// play all our sounds. Its configuration can't be changed later.
+
+	op := &oto.NewContextOptions{}
+
+	// Usually 44100 or 48000. Other values might cause distortions in Oto
+	op.SampleRate = 44100
+
+	// Number of channels (aka locations) to play sounds from. Either 1 or 2.
+	// 1 is mono sound, and 2 is stereo (most speakers are stereo).
+	op.ChannelCount = 2
+
+	// Format of the source. go-mp3's format is signed 16bit integers.
+	op.Format = oto.FormatSignedInt16LE
+
+	// Remember that you should **not** create more than one context
+	otoCtx, readyChan, err := oto.NewContext(op)
+	if err != nil {
+		panic("oto.NewContext failed: " + err.Error())
+	}
+	// It might take a bit for the hardware audio devices to be ready, so we wait on the channel.
+	<-readyChan
+
+	// Create a new 'player' that will handle our sound. Paused by default.
+	player := otoCtx.NewPlayer(decodedMp3)
+
+	// // Play starts playing the sound and returns without waiting for it (Play() is async).
+	// player.Play()
+
+	// // We can wait for the sound to finish playing using something like this
+	// for player.IsPlaying() {
+	// 	time.Sleep(time.Millisecond)
+	// }
+
+	// Now that the sound finished playing, we can restart from the beginning (or go to any location in the sound) using seek
+	// newPos, err := player.(io.Seeker).Seek(0, io.SeekStart)
+	// if err != nil{
+	//     panic("player.Seek failed: " + err.Error())
+	// }
+	// println("Player is now at position:", newPos)
+	// player.Play()
+
+	// If you don't want the player/sound anymore simply close
+	// err = player.Close()
+	// if err != nil {
+	// 	panic("player.Close failed: " + err.Error())
+	// }
+
 	run := func() {
 		cfg := pixelgl.WindowConfig{
 			Title:  "Ted is v cool!",
@@ -474,23 +548,99 @@ func renderAll(t *Track) {
 			panic(err)
 		}
 
+		const fragmentShader = `
+		#version 330 core
+		
+		// in vec4  vColor;
+		in vec2  vTexCoords;
+		// in float vIntensity;
+		// in vec4  vClipRect;
+		
+		out vec4 fragColor;
+		
+		// uniform vec4 uColorMask;
+		uniform vec4 uTexBounds;
+		uniform sampler2D uTexture;
+		
+		void main() {
+			fragColor = vec4(1, 0, 0, 0);
+			// vec2 t = (vTexCoords - uTexBounds.xy) / uTexBounds.zw;
+			// fragColor += vIntensity * vColor * texture(uTexture, t);
+			// fragColor *= uColorMask;
+		}
+		`
+
+		// win.Canvas().SetFragmentShader(fragmentShader)
+
 		imd := imdraw.New(nil)
 
-		fps30 := time.Tick(time.Second / 30)
+		shaderImd := imdraw.New(nil)
+		shaderCanvas := pixelgl.NewCanvas(win.Bounds())
+		shaderCanvas.SetFragmentShader(fragmentShader)
+		// shaderCanvas.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
+
+		fps := time.Tick(time.Second / 60)
 		start := time.Now()
 		nextMeasureDeltaTime := 0
 
-		backgroundColor := colornames.Violet
+		// Play starts playing the sound and returns without waiting for it (Play() is async).
+		// For some reason not running it in goroutine causes it not to play, so we run it in a goroutine
+		seekChannel := make(chan int64)
+		go func() {
+			player.Play()
+			// We can wait for the sound to finish playing using something like this
+			// for player.IsPlaying() {
+			// 	time.Sleep(time.Millisecond)
+			// }
+
+			// when told, seek to the new position
+			for {
+				seekPosition := <-seekChannel
+				player.Pause()
+				newPos, err := player.Seek(seekPosition, io.SeekStart)
+				if err != nil {
+					panic("player.Seek failed: " + err.Error())
+				}
+				logger.Debug("Player is now at position:", newPos)
+				player.Play()
+			}
+		}()
+
+		backgroundColor := colornames.Black
 		foregroundColor := colornames.White
 		// accentColor := colornames.Black
 		for !win.Closed() {
 			win.Clear(backgroundColor)
 			imd.Clear()
 			imd.Reset()
+			shaderImd.Clear()
+			shaderCanvas.Clear(pixel.RGB(0, 0, 0).Mul(pixel.Alpha(0)))
 
-			if win.Pressed(pixelgl.KeySpace) {
+			if win.JustReleased(pixelgl.KeySpace) {
 				start = time.Now()
+				nextMeasureDeltaTime = 0
+				// TODO: fix the number we send since we now use relative seek
+				seekChannel <- 0
 			}
+			// Gave up on this, can't figure out how to seek in audio properly
+			// } else if win.JustReleased(pixelgl.KeyRight) {
+			// 	// go one measure forward by moving the start time back by one measure
+			// 	timeInMeasure := time.Duration(ppqn) * time.Duration(microSecondsPerQuarterNote) * time.Microsecond
+			// 	start = start.Add(timeInMeasure * -1)
+			// 	newElapsedTime := time.Since(start)
+			// 	// calculate bitrate??
+			// 	duration := time.Duration(decodedMp3.Length()) * time.Second / time.Duration(decodedMp3.SampleRate()*2)
+			//  // This appears to be incorrect, it printed 10m
+			// 	logger.Info("Duration:", duration)
+
+			// 	// calculate bitrate
+			// 	fileSizeBytes := decodedMp3.Length()
+			// 	fileSizeBits := int64(fileSizeBytes) * 8
+			// 	bitrate := fileSizeBits / int64(duration.Seconds())
+			// 	byteOffset := (newElapsedTime.Seconds() * float64(bitrate) / 8)
+
+			// 	seekChannel <- int64(byteOffset)
+			// }
 
 			// draw some lines for notes
 			// for i := 0; i < 128; i++ {
@@ -511,18 +661,52 @@ func renderAll(t *Track) {
 				foregroundColor = tmp
 			}
 
-			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, foregroundColor)
-			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.Gray)
-			renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/4, xTranslate, colornames.Black)
+			trackColors := []color.RGBA{
+				colornames.White,
+				colornames.Red,
+				colornames.Orange,
+				colornames.Yellow,
+				colornames.Green,
+				colornames.Blue,
+				colornames.Indigo,
+				colornames.Violet,
+			}
+
+			for index, t := range tracks {
+				colorToUse := trackColors[index%len(trackColors)]
+
+				renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, colorToUse)
+
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.White)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, colornames.Red)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.Orange)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/4, xTranslate, colornames.Yellow)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/6, xTranslate, colornames.Green)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/8, xTranslate, colornames.Blue)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/16, xTranslate, colornames.Indigo)
+				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/32, xTranslate, colornames.Violet)
+			}
 
 			// vertical line in center
 			imd.Color = foregroundColor
 			imd.Push(pixel.V(width/2, height), pixel.V(width/2, 0))
-			imd.Line(2)
+			imd.Line(1)
 
+			// measure lines
+			for i := 0; i < 200; i++ {
+				if i%4 == 0 {
+					shaderImd.Color = foregroundColor
+					shaderImd.Push(pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, height), pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, 0))
+					shaderImd.Line(1)
+				}
+			}
+
+			shaderImd.Draw(shaderCanvas)
+			shaderCanvas.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
 			imd.Draw(win)
+
 			win.Update()
-			<-fps30
+			<-fps
 		}
 	}
 
@@ -546,12 +730,35 @@ func pkg() {
 }
 
 func main() {
+	loggerLevel := slog.LevelInfo
+	if debug {
+		loggerLevel = slog.LevelDebug
+	}
+	loggerOpts := &slog.HandlerOptions{Level: loggerLevel}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, loggerOpts))
+
 	argsWithoutProg := os.Args[1:]
 	if len(argsWithoutProg) == 0 || argsWithoutProg[0] == "pkg" {
 		pkg()
 	} else if argsWithoutProg[0] == "diy" {
-		track := diy()
-		renderAll(track)
+		tracks := make([]*Track, 0)
+
+		files, err := os.ReadDir("./ag")
+		if err != nil {
+			panic(err)
+		}
+
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".mid") {
+				continue
+			}
+
+			filePath := fmt.Sprintf("./ag/%s", file.Name())
+			track := diy(logger, filePath)
+			tracks = append(tracks, track)
+		}
+
+		renderAll(tracks, logger)
 	} else {
 		fmt.Println("Invalid command")
 	}
