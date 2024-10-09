@@ -12,9 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	// "github.com/faiface/pixel"
-	// "github.com/faiface/pixel/imdraw"
-	// "github.com/faiface/pixel/pixelgl"
+	_ "embed"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -24,6 +22,9 @@ import (
 	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
 )
+
+//go:embed radialblur.kage
+var radialblur_kage []byte
 
 const width = 1024
 const height = 768
@@ -81,49 +82,99 @@ type Track struct {
 	notes []Note
 }
 
+type RenderableNoteBase struct {
+	Note
+	z int // z-index, used for rendering order
+}
+
+type NoteRect struct {
+	RenderableNoteBase
+	xScale float64
+	color  *color.RGBA
+}
+
+type NoteScreen struct {
+	RenderableNoteBase
+	color *color.RGBA
+}
+
+type Renderable interface {
+	GetZ() int
+	Draw(screen *ebiten.Image, g *Game)
+}
+
+func (o *RenderableNoteBase) GetZ() int {
+	return o.z
+}
+
+func (o *NoteRect) Draw(screen *ebiten.Image, g *Game) {
+	// Draw the object
+	noteY := g.noteHeight * (o.num - g.noteMin)
+	// flip b/c we draw from upper left corner
+	noteY = height - noteY
+
+	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
+
+	noteX := float32(o.on-g.elapsedDeltaTime)*float32(o.xScale) + float32(g.xTranslate)
+	noteWidth := float32(o.off-o.on) * float32(o.xScale)
+	if isBeingPlayed {
+		vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), o.color, true)
+	} else {
+		strokeWidth := float32(1)
+		vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), strokeWidth, o.color, true)
+	}
+}
+
+func (o *NoteScreen) Draw(screen *ebiten.Image, g *Game) {
+	// cover screen with color
+	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
+	if isBeingPlayed {
+		vector.DrawFilledRect(screen, 0, 0, float32(width), float32(height), o.color, true)
+	}
+}
+
 type Game struct {
 	currentTick                int64
+	elapsedDeltaTime           int
 	tracks                     []*Track
+	notes                      []Renderable
 	noteMin                    int
 	noteHeight                 int
 	noteTopBottomPaddingPixels int
-	xScale                     float64
-	xTranslate                 float64
+	// xScale                     float64
+	xTranslate float64
+	shader     *ebiten.Shader
 }
 
 func (g *Game) Update() error {
 	g.currentTick++
+	// convert screen render ticks (g.currentTick) to midi ticks
+	// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
+	g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
 
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// convert screen render ticks (g.currentTick) to midi ticks
-	// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
-	elapsedDeltaTime := secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
 
-	trackColors := []color.RGBA{
-		colornames.White,
-		colornames.Red,
-		colornames.Orange,
-		colornames.Yellow,
-		colornames.Green,
-		colornames.Blue,
-		colornames.Indigo,
-		colornames.Violet,
+	noteImage := ebiten.NewImage(width, height)
+	for _, note := range g.notes {
+		note.Draw(noteImage, g)
 	}
-
-	for index, t := range g.tracks {
-		colorToUse := trackColors[index%len(trackColors)]
-
-		if t.name == "./ag/introvocals.mid" {
-			renderTrack2(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
-		} else {
-			renderTrack(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
-		}
+	cx, cy := ebiten.CursorPosition()
+	op := &ebiten.DrawRectShaderOptions{}
+	op.Uniforms = map[string]any{
+		"Time":   float32(g.currentTick) / 60,
+		"Cursor": []float32{float32(cx), float32(cy)},
+		"Center": []float32{float32(width / 2), float32(height / 2)},
 	}
+	op.Images[0] = noteImage
+	op.Images[1] = noteImage
+	op.Images[2] = noteImage
+	op.Images[3] = noteImage
+	screen.DrawRectShader(width, height, g.shader, op)
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, elapsedDeltaTime, g.noteHeight))
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
@@ -525,9 +576,6 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 
 	noteHeight := (height - noteTopBottomPaddingPixels*2) / (noteMax - noteMin)
 
-	// Use xScale to adjust the horizontal scaling of the notes
-	const xScale = 0.5
-
 	// Use xTranslate to adjust the horizontal translation of the notes (e.g. where the note-on should be occur)
 	const xTranslate = width / 2
 
@@ -547,8 +595,6 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		panic(err)
 	}
 
-	p.Play()
-
 	// start tests
 	// Playing with layering of tracks, we should probably turn tracks into a list of notes that point to a track renderer
 	// so we can render on per-note basis
@@ -559,13 +605,59 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 
 	ebiten.SetWindowSize(width, height)
 	ebiten.SetWindowTitle("Hello, World!")
+	notes := make([]Renderable, 0)
+	for trackIndex, t := range tracks {
+		doScreen := false // t.name == "./ag/introvocals.mid"
+		chosenColor := colornames.Map[colornames.Names[trackIndex%len(colornames.Names)]]
+		for noteIndex, note := range t.notes {
+			if doScreen {
+				z := -1
+				notes = append(notes, &NoteScreen{
+					RenderableNoteBase: RenderableNoteBase{
+						Note: note,
+						z:    z,
+					},
+					color: &chosenColor,
+				})
+			} else {
+				z := 0
+				xScale := 2.0
+				if noteIndex%2 == 0 {
+					xScale = 1
+				}
+				notes = append(notes, &NoteRect{
+					RenderableNoteBase: RenderableNoteBase{
+						Note: note,
+						z:    z,
+					},
+					color:  &chosenColor,
+					xScale: xScale,
+				})
+			}
+		}
+
+		// kind of dumb to sort here but let's do it anyways for now
+		sort.Slice(notes, func(i, j int) bool {
+			return notes[i].GetZ() < notes[j].GetZ()
+		})
+	}
+
+	shader, err := ebiten.NewShader(radialblur_kage)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	p.Play()
 	if err := ebiten.RunGame(&Game{
+		currentTick:                0,
+		elapsedDeltaTime:           0,
 		tracks:                     tracks,
+		notes:                      notes,
 		noteMin:                    noteMin,
 		noteHeight:                 noteHeight,
 		noteTopBottomPaddingPixels: noteTopBottomPaddingPixels,
-		xScale:                     xScale,
 		xTranslate:                 xTranslate,
+		shader:                     shader,
 	}); err != nil {
 		log.Fatal(err)
 	}
