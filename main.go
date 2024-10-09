@@ -17,7 +17,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
@@ -108,8 +107,9 @@ func (o *RenderableNoteBase) GetZ() int {
 }
 
 func (o *NoteRect) Draw(screen *ebiten.Image, g *Game) {
+
 	// Draw the object
-	noteY := g.noteHeight * (o.num - g.noteMin)
+	noteY := g.noteHeight*(o.num-g.noteMin) + g.noteTopBottomPaddingPixels
 	// flip b/c we draw from upper left corner
 	noteY = height - noteY
 
@@ -174,7 +174,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.Images[3] = noteImage
 	screen.DrawRectShader(width, height, g.shader, op)
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
+	// ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
@@ -608,7 +608,16 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	notes := make([]Renderable, 0)
 	for trackIndex, t := range tracks {
 		doScreen := false // t.name == "./ag/introvocals.mid"
-		chosenColor := colornames.Map[colornames.Names[trackIndex%len(colornames.Names)]]
+		colorsToUse := []color.RGBA{
+			colornames.Red,
+			colornames.Blue,
+			colornames.Green,
+			colornames.Yellow,
+			colornames.Purple,
+			// colornames.Cyan,
+			colornames.White,
+		}
+		chosenColor := colorsToUse[trackIndex%len(colorsToUse)]
 		for noteIndex, note := range t.notes {
 			if doScreen {
 				z := -1
