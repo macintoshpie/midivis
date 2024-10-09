@@ -113,13 +113,17 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		colornames.Violet,
 	}
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, elapsedDeltaTime, g.noteHeight))
-
 	for index, t := range g.tracks {
 		colorToUse := trackColors[index%len(trackColors)]
 
-		renderTrack(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
+		if t.name == "./ag/introvocals.mid" {
+			renderTrack2(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
+		} else {
+			renderTrack(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
+		}
 	}
+
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, elapsedDeltaTime, g.noteHeight))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
@@ -475,12 +479,26 @@ func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin i
 	}
 }
 
-func renderAll(tracks []*Track, logger *slog.Logger) {
+func renderTrack2(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
+	for _, note := range t.notes {
+		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
+		if !isBeingPlayed {
+			continue
+		}
+
+		screen.Fill(colornames.Green)
+
+		// timePlayed := elapsedDeltaTime - note.on
+		// vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
+
+	}
+}
+func startRender(tracks []*Track, logger *slog.Logger) {
 
 	const oscillateColors = false
 
 	// Use noteTopBottomPaddingPixels to adjust the padding at the top and bottom of screen for notes
-	const noteTopBottomPaddingPixels = 100
+	const noteTopBottomPaddingPixels = 50
 
 	// Use Normalize and/or noteMin/noteMax to adjust the range of notes displayed
 	const normalize = true
@@ -530,6 +548,14 @@ func renderAll(tracks []*Track, logger *slog.Logger) {
 	}
 
 	p.Play()
+
+	// start tests
+	// Playing with layering of tracks, we should probably turn tracks into a list of notes that point to a track renderer
+	// so we can render on per-note basis
+	sort.Slice(tracks, func(i, j int) bool {
+		return tracks[i].name == "./ag/introvocals.mid"
+	})
+	// end tests
 
 	ebiten.SetWindowSize(width, height)
 	ebiten.SetWindowTitle("Hello, World!")
@@ -590,7 +616,7 @@ func main() {
 			tracks = append(tracks, track)
 		}
 
-		renderAll(tracks, logger)
+		startRender(tracks, logger)
 	} else {
 		fmt.Println("Invalid command")
 	}
