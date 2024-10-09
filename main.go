@@ -5,21 +5,28 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"log"
 	"log/slog"
 	"math"
 	"os"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/ebitengine/oto/v3"
-	"github.com/faiface/pixel"
-	"github.com/faiface/pixel/imdraw"
-	"github.com/faiface/pixel/pixelgl"
-	"github.com/hajimehoshi/go-mp3"
+	// "github.com/faiface/pixel"
+	// "github.com/faiface/pixel/imdraw"
+	// "github.com/faiface/pixel/pixelgl"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
 )
+
+const width = 1024
+const height = 768
 
 // const midiFileName = "IDL main loop.mid"
 const midiFileName = "sonatas_k-417_(c)sankey.mid"
@@ -39,7 +46,7 @@ const microSecondsPerQuarterNote = 375000
 // Sonata
 // const microSecondsPerQuarterNote = 465000 // was originally 500000 but messed with it to get close to matching https://www.youtube.com/watch?v=OJ1p6hD-Df0
 
-const debug = false
+const debug = true
 
 type MidiNoteType byte
 
@@ -69,8 +76,54 @@ type Note struct {
 }
 
 type Track struct {
+	name  string
 	bpm   int
 	notes []Note
+}
+
+type Game struct {
+	currentTick                int64
+	tracks                     []*Track
+	noteMin                    int
+	noteHeight                 int
+	noteTopBottomPaddingPixels int
+	xScale                     float64
+	xTranslate                 float64
+}
+
+func (g *Game) Update() error {
+	g.currentTick++
+
+	return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	// convert screen render ticks (g.currentTick) to midi ticks
+	// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
+	elapsedDeltaTime := secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
+
+	trackColors := []color.RGBA{
+		colornames.White,
+		colornames.Red,
+		colornames.Orange,
+		colornames.Yellow,
+		colornames.Green,
+		colornames.Blue,
+		colornames.Indigo,
+		colornames.Violet,
+	}
+
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, elapsedDeltaTime, g.noteHeight))
+
+	for index, t := range g.tracks {
+		colorToUse := trackColors[index%len(trackColors)]
+
+		renderTrack(t, screen, elapsedDeltaTime, g.noteMin, g.noteHeight, g.noteTopBottomPaddingPixels, g.xScale, g.xTranslate, colorToUse)
+	}
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+	return width, height
 }
 
 func check(e error) {
@@ -121,9 +174,10 @@ func NewMidiTrack() *MidiTrack {
 	}
 }
 
-func NewTrack() *Track {
+func NewTrack(fileName string) *Track {
 
 	return &Track{
+		name:  fileName,
 		notes: []Note{},
 	}
 }
@@ -363,7 +417,7 @@ func diy(logger *slog.Logger, fileName string) *Track {
 		}
 	}
 
-	track := NewTrack()
+	track := NewTrack(fileName)
 	deltaTotal := 0
 	noteOnMap := make(map[byte]Note)
 	for _, midiNote := range midiTrack.notes {
@@ -402,43 +456,26 @@ func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppq
 	return int(math.Round(deltaTime))
 }
 
-func renderTrack(t *Track, imd *imdraw.IMDraw, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
+func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
 	for _, note := range t.notes {
-		noteY := noteHeight*(note.num-noteMin) + noteTopBottomPaddingPixels
+		noteY := noteHeight * (note.num - noteMin)
+		// flip b/c we draw from upper left corner
+		noteY = height - noteY
+
 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
 
-		// draw a circle behind it if it's being played
-		// if isBeingPlayed {
-		// 	fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
-		// 	// semiTransparent := pixel.RGB(0, 0, 0).Mul(pixel.Alpha(fractionRemaining))
-		// 	imd.Color = pixel.RGB(float64(accentColor.R), float64(accentColor.G), float64(accentColor.B)).Mul(pixel.Alpha(fractionRemaining - 0.2))
-		// 	imd.Push(pixel.V(width/2, float64(noteY)))
-		// 	imd.Circle(50, 0)
-		// }
-
+		noteX := float32(note.on-elapsedDeltaTime)*float32(xScale) + float32(xTranslate)
+		noteWidth := float32(note.off-note.on) * float32(xScale)
 		if isBeingPlayed {
-			// fractionRemaining := float64(note.off-elapsedDeltaTime) / float64(note.off-note.on)
-
-			imd.Color = foregroundColor
+			vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
 		} else {
-			imd.Color = foregroundColor
+			strokeWidth := float32(1)
+			vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), strokeWidth, colornames.White, true)
 		}
-		// bottom left point
-		imd.Push(pixel.V(float64((note.on-elapsedDeltaTime))*xScale+xTranslate, float64(noteY)))
-		// top right point
-		imd.Push(pixel.V(float64((note.off-elapsedDeltaTime))*xScale+xTranslate, float64(noteY+noteHeight)))
-		if isBeingPlayed {
-			imd.Rectangle(0)
-		} else {
-			imd.Rectangle(2)
-		}
-
 	}
 }
 
 func renderAll(tracks []*Track, logger *slog.Logger) {
-	const width = 1024
-	const height = 768
 
 	const oscillateColors = false
 
@@ -476,208 +513,36 @@ func renderAll(tracks []*Track, logger *slog.Logger) {
 	// Use xTranslate to adjust the horizontal translation of the notes (e.g. where the note-on should be occur)
 	const xTranslate = width / 2
 
-	// Audio setup
-	file, err := os.Open("A. G. Cook - Idyll.mp3")
+	// Setup audio player
+	const sampleRate = 44100
+	audioContext := audio.NewContext(sampleRate)
+
+	audioFile, err := os.Open("A. G. Cook - Idyll.mp3")
+	check(err)
+	s, err := mp3.DecodeF32(audioFile)
 	if err != nil {
-		panic("opening my-file.mp3 failed: " + err.Error())
+		panic(err)
 	}
 
-	// Decode file. This process is done as the file plays so it won't
-	// load the whole thing into memory.
-	decodedMp3, err := mp3.NewDecoder(file)
+	p, err := audioContext.NewPlayerF32(s)
 	if err != nil {
-		panic("mp3.NewDecoder failed: " + err.Error())
+		panic(err)
 	}
 
-	// Prepare an Oto context (this will use your default audio device) that will
-	// play all our sounds. Its configuration can't be changed later.
+	p.Play()
 
-	op := &oto.NewContextOptions{}
-
-	// Usually 44100 or 48000. Other values might cause distortions in Oto
-	op.SampleRate = 44100
-
-	// Number of channels (aka locations) to play sounds from. Either 1 or 2.
-	// 1 is mono sound, and 2 is stereo (most speakers are stereo).
-	op.ChannelCount = 2
-
-	// Format of the source. go-mp3's format is signed 16bit integers.
-	op.Format = oto.FormatSignedInt16LE
-
-	// Remember that you should **not** create more than one context
-	otoCtx, readyChan, err := oto.NewContext(op)
-	if err != nil {
-		panic("oto.NewContext failed: " + err.Error())
+	ebiten.SetWindowSize(width, height)
+	ebiten.SetWindowTitle("Hello, World!")
+	if err := ebiten.RunGame(&Game{
+		tracks:                     tracks,
+		noteMin:                    noteMin,
+		noteHeight:                 noteHeight,
+		noteTopBottomPaddingPixels: noteTopBottomPaddingPixels,
+		xScale:                     xScale,
+		xTranslate:                 xTranslate,
+	}); err != nil {
+		log.Fatal(err)
 	}
-	// It might take a bit for the hardware audio devices to be ready, so we wait on the channel.
-	<-readyChan
-
-	// Create a new 'player' that will handle our sound. Paused by default.
-	player := otoCtx.NewPlayer(decodedMp3)
-
-	// // Play starts playing the sound and returns without waiting for it (Play() is async).
-	// player.Play()
-
-	// // We can wait for the sound to finish playing using something like this
-	// for player.IsPlaying() {
-	// 	time.Sleep(time.Millisecond)
-	// }
-
-	// Now that the sound finished playing, we can restart from the beginning (or go to any location in the sound) using seek
-	// newPos, err := player.(io.Seeker).Seek(0, io.SeekStart)
-	// if err != nil{
-	//     panic("player.Seek failed: " + err.Error())
-	// }
-	// println("Player is now at position:", newPos)
-	// player.Play()
-
-	// If you don't want the player/sound anymore simply close
-	// err = player.Close()
-	// if err != nil {
-	// 	panic("player.Close failed: " + err.Error())
-	// }
-
-	run := func() {
-		cfg := pixelgl.WindowConfig{
-			Title:  "Ted is v cool!",
-			Bounds: pixel.R(0, 0, width, height),
-			VSync:  true,
-		}
-		win, err := pixelgl.NewWindow(cfg)
-		if err != nil {
-			panic(err)
-		}
-
-		imd := imdraw.New(nil)
-
-		fps := time.Tick(time.Second / 60)
-		start := time.Now()
-		nextMeasureDeltaTime := 0
-
-		// Play starts playing the sound and returns without waiting for it (Play() is async).
-		// For some reason not running it in goroutine causes it not to play, so we run it in a goroutine
-		seekChannel := make(chan int64)
-		go func() {
-			player.Play()
-			// We can wait for the sound to finish playing using something like this
-			// for player.IsPlaying() {
-			// 	time.Sleep(time.Millisecond)
-			// }
-
-			// when told, seek to the new position
-			for {
-				seekPosition := <-seekChannel
-				player.Pause()
-				newPos, err := player.Seek(seekPosition, io.SeekStart)
-				if err != nil {
-					panic("player.Seek failed: " + err.Error())
-				}
-				logger.Debug("Player is now at position:", newPos)
-				player.Play()
-			}
-		}()
-
-		backgroundColor := colornames.Black
-		foregroundColor := colornames.White
-		// accentColor := colornames.Black
-		for !win.Closed() {
-			win.Clear(backgroundColor)
-			imd.Clear()
-			imd.Reset()
-
-			if win.JustReleased(pixelgl.KeySpace) {
-				start = time.Now()
-				nextMeasureDeltaTime = 0
-				// TODO: fix the number we send since we now use relative seek
-				seekChannel <- 0
-			}
-			// Gave up on this, can't figure out how to seek in audio properly
-			// } else if win.JustReleased(pixelgl.KeyRight) {
-			// 	// go one measure forward by moving the start time back by one measure
-			// 	timeInMeasure := time.Duration(ppqn) * time.Duration(microSecondsPerQuarterNote) * time.Microsecond
-			// 	start = start.Add(timeInMeasure * -1)
-			// 	newElapsedTime := time.Since(start)
-			// 	// calculate bitrate??
-			// 	duration := time.Duration(decodedMp3.Length()) * time.Second / time.Duration(decodedMp3.SampleRate()*2)
-			//  // This appears to be incorrect, it printed 10m
-			// 	logger.Info("Duration:", duration)
-
-			// 	// calculate bitrate
-			// 	fileSizeBytes := decodedMp3.Length()
-			// 	fileSizeBits := int64(fileSizeBytes) * 8
-			// 	bitrate := fileSizeBits / int64(duration.Seconds())
-			// 	byteOffset := (newElapsedTime.Seconds() * float64(bitrate) / 8)
-
-			// 	seekChannel <- int64(byteOffset)
-			// }
-
-			// draw some lines for notes
-			// for i := 0; i < 128; i++ {
-			// 	imd.Color = colornames.Black
-			// 	imd.Push(pixel.V(0, float64(i*noteHeight)))
-			// 	imd.Push(pixel.V(width, float64(i*noteHeight)))
-			// 	imd.Line(1)
-			// }
-
-			elapsedSeconds := time.Since(start).Seconds()
-			elapsedDeltaTime := secondsToDeltaTime(elapsedSeconds, microSecondsPerQuarterNote, ppqn)
-
-			if elapsedDeltaTime > nextMeasureDeltaTime && oscillateColors {
-				nextMeasureDeltaTime += ppqn
-
-				tmp := backgroundColor
-				backgroundColor = foregroundColor
-				foregroundColor = tmp
-			}
-
-			trackColors := []color.RGBA{
-				colornames.White,
-				colornames.Red,
-				colornames.Orange,
-				colornames.Yellow,
-				colornames.Green,
-				colornames.Blue,
-				colornames.Indigo,
-				colornames.Violet,
-			}
-
-			for index, t := range tracks {
-				colorToUse := trackColors[index%len(trackColors)]
-
-				renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, colorToUse)
-
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.White)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale, xTranslate, colornames.Red)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/2, xTranslate, colornames.Orange)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/4, xTranslate, colornames.Yellow)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/6, xTranslate, colornames.Green)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/8, xTranslate, colornames.Blue)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/16, xTranslate, colornames.Indigo)
-				// renderTrack(t, imd, elapsedDeltaTime, noteMin, noteHeight, noteTopBottomPaddingPixels, xScale/32, xTranslate, colornames.Violet)
-			}
-
-			// vertical line in center
-			imd.Color = foregroundColor
-			imd.Push(pixel.V(width/2, height), pixel.V(width/2, 0))
-			imd.Line(1)
-
-			// measure lines
-			for i := 0; i < 200; i++ {
-				if i%4 == 0 {
-					imd.Color = foregroundColor
-					imd.Push(pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, height), pixel.V(float64(i*ppqn-elapsedDeltaTime)*xScale+xTranslate, 0))
-					imd.Line(1)
-				}
-			}
-
-			imd.Draw(win)
-
-			win.Update()
-			<-fps
-		}
-	}
-
-	pixelgl.Run(run)
 }
 
 func pkg() {
