@@ -25,6 +25,9 @@ import (
 //go:embed radialblur.kage
 var radialblur_kage []byte
 
+//go:embed colormod.kage
+var colormod_kage []byte
+
 const width = 1024
 const height = 768
 
@@ -97,6 +100,11 @@ type NoteScreen struct {
 	color *color.RGBA
 }
 
+type NoteMeter struct {
+	RenderableNoteBase
+	color *color.RGBA
+}
+
 type NoteZoom struct {
 	RenderableNoteBase
 	color *color.RGBA
@@ -142,7 +150,7 @@ func (o *NoteScreen) Draw(screen *ebiten.Image, g *Game) {
 	}
 }
 
-func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
+func (o *NoteMeter) Draw(screen *ebiten.Image, g *Game) {
 	// zoom in from small to large, filling up width of screen when being played
 	deltaThreshold := ppqn
 
@@ -174,6 +182,47 @@ func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
 	}
 }
 
+func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
+	// zoom in from small to large, filling up width of screen when being played
+	deltaThreshold := ppqn * 2
+
+	// hasn't started
+	if o.on-deltaThreshold > g.elapsedDeltaTime {
+		return
+	}
+
+	// already finished
+	if o.off < g.elapsedDeltaTime {
+		return
+	}
+
+	tUntilOn := max(float32(o.on-g.elapsedDeltaTime), 0.0)
+	pctUntilPlayStarts := tUntilOn / float32(deltaThreshold)
+	// flip it, so 0 is at beginning of threshold, 1 as at note on
+	pctUntilPlayStarts = 1 - pctUntilPlayStarts
+
+	// x is between 0 and width / 2
+	noteX := float32(width) / 2 * pctUntilPlayStarts
+	// flip x so it goes from width / 2 to 0
+	noteX = float32(width)/2 - noteX
+	distToMiddle := float32(width)/2 - noteX
+	noteWidth := distToMiddle * 2
+
+	noteY := g.noteHeight*(o.num-g.noteMin) + g.noteTopBottomPaddingPixels
+	// flip b/c we draw from upper left corner
+	noteY = height - noteY
+
+	noteHeight := float32(g.noteHeight) * pctUntilPlayStarts
+
+	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
+	if isBeingPlayed {
+		vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, noteHeight, o.color, true)
+	} else {
+		strokeWidth := float32(1)
+		vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, noteHeight, strokeWidth, o.color, true)
+	}
+}
+
 type Game struct {
 	currentTick                int64
 	elapsedDeltaTime           int
@@ -183,8 +232,9 @@ type Game struct {
 	noteHeight                 int
 	noteTopBottomPaddingPixels int
 	// xScale                     float64
-	xTranslate float64
-	shader     *ebiten.Shader
+	xTranslate     float64
+	shader         *ebiten.Shader
+	colormodShader *ebiten.Shader
 }
 
 func (g *Game) Update() error {
@@ -213,6 +263,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.Images[1] = noteImage
 	op.Images[2] = noteImage
 	op.Images[3] = noteImage
+
+	// blurImage := ebiten.NewImage(width, height)
+	// blurImage.DrawRectShader(width, height, g.shader, op)
+
+	// op.Images[0] = blurImage
+	// op.Images[1] = blurImage
+	// op.Images[2] = blurImage
+	// op.Images[3] = blurImage
+
 	screen.DrawRectShader(width, height, g.shader, op)
 
 	// ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
@@ -707,6 +766,11 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		log.Fatal(err)
 	}
 
+	colormodShader, err := ebiten.NewShader(colormod_kage)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	p.Play()
 	if err := ebiten.RunGame(&Game{
 		currentTick:                0,
@@ -718,6 +782,7 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		noteTopBottomPaddingPixels: noteTopBottomPaddingPixels,
 		xTranslate:                 xTranslate,
 		shader:                     shader,
+		colormodShader:             colormodShader,
 	}); err != nil {
 		log.Fatal(err)
 	}
