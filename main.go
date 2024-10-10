@@ -97,6 +97,11 @@ type NoteScreen struct {
 	color *color.RGBA
 }
 
+type NoteZoom struct {
+	RenderableNoteBase
+	color *color.RGBA
+}
+
 type Renderable interface {
 	GetZ() int
 	Draw(screen *ebiten.Image, g *Game)
@@ -115,8 +120,12 @@ func (o *NoteRect) Draw(screen *ebiten.Image, g *Game) {
 
 	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
 
-	noteX := float32(o.on-g.elapsedDeltaTime)*float32(o.xScale) + float32(g.xTranslate)
-	noteWidth := float32(o.off-o.on) * float32(o.xScale)
+	// set arbitrary velocity minimum and scale from there
+	velMin := 100
+	velRange := 127 - velMin
+	xScaleVel := ((velMin - o.vel) / velRange) + 1
+	noteX := float32(o.on-g.elapsedDeltaTime)*float32(xScaleVel) + float32(g.xTranslate)
+	noteWidth := float32(o.off-o.on) * float32(xScaleVel)
 	if isBeingPlayed {
 		vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), o.color, true)
 	} else {
@@ -130,6 +139,38 @@ func (o *NoteScreen) Draw(screen *ebiten.Image, g *Game) {
 	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
 	if isBeingPlayed {
 		vector.DrawFilledRect(screen, 0, 0, float32(width), float32(height), o.color, true)
+	}
+}
+
+func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
+	// zoom in from small to large, filling up width of screen when being played
+	deltaThreshold := ppqn
+
+	// hasn't started
+	if o.on-deltaThreshold > g.elapsedDeltaTime {
+		return
+	}
+
+	// already finished
+	if o.off < g.elapsedDeltaTime {
+		return
+	}
+
+	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
+	if isBeingPlayed {
+		noteX := float32(0)
+		// noteY := o.num * g.noteHeight
+		// Draw the object
+		noteY := g.noteHeight*(o.num-g.noteMin) + g.noteTopBottomPaddingPixels
+		// flip b/c we draw from upper left corner
+		noteY = height - noteY
+
+		pctUntilPlayStarts := float32(g.elapsedDeltaTime-o.on) / float32(deltaThreshold)
+		// flip it
+		pctUntilPlayStarts = 1 - pctUntilPlayStarts
+		// width goes from 0 to width of screen
+		noteWidth := width * pctUntilPlayStarts
+		vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), o.color, true)
 	}
 }
 
@@ -511,39 +552,39 @@ func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppq
 	return int(math.Round(deltaTime))
 }
 
-func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
-	for _, note := range t.notes {
-		noteY := noteHeight * (note.num - noteMin)
-		// flip b/c we draw from upper left corner
-		noteY = height - noteY
+// func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
+// 	for _, note := range t.notes {
+// 		noteY := noteHeight * (note.num - noteMin)
+// 		// flip b/c we draw from upper left corner
+// 		noteY = height - noteY
 
-		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
+// 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
 
-		noteX := float32(note.on-elapsedDeltaTime)*float32(xScale) + float32(xTranslate)
-		noteWidth := float32(note.off-note.on) * float32(xScale)
-		if isBeingPlayed {
-			vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
-		} else {
-			strokeWidth := float32(1)
-			vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), strokeWidth, colornames.White, true)
-		}
-	}
-}
+// 		noteX := float32(note.on-elapsedDeltaTime)*float32(xScale) + float32(xTranslate)
+// 		noteWidth := float32(note.off-note.on) * float32(xScale)
+// 		if isBeingPlayed {
+// 			vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
+// 		} else {
+// 			strokeWidth := float32(1)
+// 			vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), strokeWidth, colornames.White, true)
+// 		}
+// 	}
+// }
 
-func renderTrack2(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
-	for _, note := range t.notes {
-		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
-		if !isBeingPlayed {
-			continue
-		}
+// func renderTrack2(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
+// 	for _, note := range t.notes {
+// 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
+// 		if !isBeingPlayed {
+// 			continue
+// 		}
 
-		screen.Fill(colornames.Green)
+// 		screen.Fill(colornames.Green)
 
-		// timePlayed := elapsedDeltaTime - note.on
-		// vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
+// 		// timePlayed := elapsedDeltaTime - note.on
+// 		// vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
 
-	}
-}
+//		}
+//	}
 func startRender(tracks []*Track, logger *slog.Logger) {
 
 	const oscillateColors = false
@@ -608,6 +649,7 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	notes := make([]Renderable, 0)
 	for trackIndex, t := range tracks {
 		doScreen := false // t.name == "./ag/introvocals.mid"
+		doZoom := true    //"./ag/introvocals.mid" == t.name
 		colorsToUse := []color.RGBA{
 			colornames.Red,
 			colornames.Blue,
@@ -622,6 +664,15 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 			if doScreen {
 				z := -1
 				notes = append(notes, &NoteScreen{
+					RenderableNoteBase: RenderableNoteBase{
+						Note: note,
+						z:    z,
+					},
+					color: &chosenColor,
+				})
+			} else if doZoom {
+				z := 1
+				notes = append(notes, &NoteZoom{
 					RenderableNoteBase: RenderableNoteBase{
 						Note: note,
 						z:    z,
