@@ -84,6 +84,20 @@ type Track struct {
 	notes []Note
 }
 
+const (
+	NoteTypeRect = iota
+	NoteTypeScreen
+	NoteTypeMeter
+	NoteTypeZoom
+)
+
+var noteTypes = [4]int{
+	NoteTypeRect,
+	NoteTypeScreen,
+	NoteTypeMeter,
+	NoteTypeZoom,
+}
+
 type RenderableNoteBase struct {
 	Note
 	z int // z-index, used for rendering order
@@ -707,8 +721,9 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	ebiten.SetWindowTitle("Hello, World!")
 	notes := make([]Renderable, 0)
 	for trackIndex, t := range tracks {
-		doScreen := false // t.name == "./ag/introvocals.mid"
-		doZoom := true    //"./ag/introvocals.mid" == t.name
+		// doScreen := false           // t.name == "./ag/introvocals.mid"
+		// doZoom := trackIndex%2 == 0 //"./ag/introvocals.mid" == t.name
+		typeToUse := noteTypes[trackIndex%len(noteTypes)]
 		colorsToUse := []color.RGBA{
 			colornames.Red,
 			colornames.Blue,
@@ -720,8 +735,8 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		}
 		chosenColor := colorsToUse[trackIndex%len(colorsToUse)]
 		for noteIndex, note := range t.notes {
-			if doScreen {
-				z := -1
+			if typeToUse == NoteTypeScreen {
+				z := -10
 				notes = append(notes, &NoteScreen{
 					RenderableNoteBase: RenderableNoteBase{
 						Note: note,
@@ -729,8 +744,17 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 					},
 					color: &chosenColor,
 				})
-			} else if doZoom {
-				z := 1
+			} else if typeToUse == NoteTypeMeter {
+				z := -5
+				notes = append(notes, &NoteMeter{
+					RenderableNoteBase: RenderableNoteBase{
+						Note: note,
+						z:    z,
+					},
+					color: &chosenColor,
+				})
+			} else if typeToUse == NoteTypeZoom {
+				z := -1
 				notes = append(notes, &NoteZoom{
 					RenderableNoteBase: RenderableNoteBase{
 						Note: note,
