@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -106,6 +107,27 @@ var noteTypes = []int{
 	NoteTypeRadialGradient,
 }
 
+var fileNameToType = map[string]int{
+	"ah.mid":                NoteTypeRadialGradient,
+	"bridgevocalbottom.mid": NoteTypeRect,
+	"bridgevocaltop.mid":    NoteTypeRect,
+	"cleanvocalsbottom.mid": NoteTypeRect,
+	"click.mid":             NoteTypeRadialGradient,
+	"cymbalend.mid":         NoteTypeMeter,
+	"endbass.mid":           NoteTypeZoom,
+	"flutevoice.mid":        NoteTypeZoom,
+	"introvocals.mid":       NoteTypeRect,
+	"kick.mid":              NoteTypeRadialGradient,
+	"mainvocaltop.mid":      NoteTypeRect,
+	"oohchords.mid":         NoteTypeZoom,
+	"plucky.mid":            NoteTypeRect,
+	"shew.mid":              NoteTypeZoom,
+	"shimmery.mid":          NoteTypeRect,
+	"shimmeryfast.mid":      NoteTypeRect,
+	"shimmeryfastbass.mid":  NoteTypeZoom,
+	"slidey.mid":            NoteTypeZoom,
+}
+
 type RenderableNoteBase struct {
 	Note
 	z int // z-index, used for rendering order
@@ -163,6 +185,9 @@ func (o *NoteRect) Draw(screen *ebiten.Image, g *Game) {
 	noteWidth := float32(o.off-o.on) * float32(xScaleVel)
 	if isBeingPlayed {
 		vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), o.color, true)
+
+		// set the blur Y position to the note's Y position
+		g.radialBlurShaderOpts.Uniforms["Center"] = []float32{float32(width) / 2.0, float32(noteY)}
 	} else {
 		strokeWidth := float32(1)
 		vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(g.noteHeight), strokeWidth, o.color, true)
@@ -273,8 +298,11 @@ type Game struct {
 	noteHeight                 int
 	noteTopBottomPaddingPixels int
 	// xScale                     float64
-	xTranslate     float64
-	shader         *ebiten.Shader
+	xTranslate float64
+
+	shader               *ebiten.Shader
+	radialBlurShaderOpts *ebiten.DrawRectShaderOptions
+
 	colormodShader *ebiten.Shader
 
 	radialGradientShader     *ebiten.Shader
@@ -309,8 +337,14 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// reset some uniforms
+	// Update shader uniforms
 	g.radialGradientShaderOpts.Uniforms["PctShow"] = 0
+
+	cx, cy := ebiten.CursorPosition()
+	g.radialBlurShaderOpts.Uniforms["Time"] = float32(g.currentTick) / 60
+	g.radialBlurShaderOpts.Uniforms["Cursor"] = []float32{float32(cx), float32(cy)}
+	// would be cool to "lerp" between the current center and last center... but idk how to do right now
+	// g.radialBlurShaderOpts.Uniforms["Center"] = []float32{float32(width / 2), float32(height / 2)}
 
 	return nil
 }
@@ -340,21 +374,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	for _, note := range g.notes {
 		note.Draw(baseImage, g)
 	}
-	cx, cy := ebiten.CursorPosition()
-	op := &ebiten.DrawRectShaderOptions{}
-	op.Uniforms = map[string]any{
-		"Time":   float32(g.currentTick) / 60,
-		"Cursor": []float32{float32(cx), float32(cy)},
-		"Center": []float32{float32(width / 2), float32(height / 2)},
-	}
-	op.Images[0] = baseImage
-	op.Images[1] = baseImage
-	op.Images[2] = baseImage
-	op.Images[3] = baseImage
 
 	blurImage := ebiten.NewImage(width, height)
-	blurImage.DrawRectShader(width, height, g.shader, op)
+	blurImage.DrawRectShader(width, height, g.shader, g.radialBlurShaderOpts)
 
+	g.radialBlurShaderOpts.Images[0] = baseImage
 	// op.Images[0] = blurImage
 	// op.Images[1] = blurImage
 	// op.Images[2] = blurImage
@@ -425,7 +449,7 @@ func NewMidiTrack() *MidiTrack {
 func NewTrack(fileName string) *Track {
 
 	return &Track{
-		name:  fileName,
+		name:  path.Base(fileName),
 		notes: []Note{},
 	}
 }
@@ -798,21 +822,18 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		panic(err)
 	}
 
-	// start tests
-	// Playing with layering of tracks, we should probably turn tracks into a list of notes that point to a track renderer
-	// so we can render on per-note basis
-	sort.Slice(tracks, func(i, j int) bool {
-		return tracks[i].name == "./ag/introvocals.mid"
-	})
-	// end tests
-
 	ebiten.SetWindowSize(width, height)
 	ebiten.SetWindowTitle("Hello, World!")
 	notes := make([]Renderable, 0)
 	for trackIndex, t := range tracks {
 		// doScreen := false           // t.name == "./ag/introvocals.mid"
 		// doZoom := trackIndex%2 == 0 //"./ag/introvocals.mid" == t.name
-		typeToUse := noteTypes[trackIndex%len(noteTypes)]
+		// typeToUse := noteTypes[trackIndex%len(noteTypes)]
+		typeToUse, ok := fileNameToType[t.name]
+		if !ok {
+			logger.Info("Using default note type", "trackName", t.name)
+			typeToUse = NoteTypeRect
+		}
 		// typeToUse := NoteTypeRadialGradient
 		colorsToUse := []color.RGBA{
 			colornames.Red,
@@ -888,6 +909,13 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	radialBlurShaderOpts := &ebiten.DrawRectShaderOptions{}
+	radialBlurShaderOpts.Uniforms = map[string]any{
+		"Time":   0,
+		"Cursor": []float32{float32(0), float32(0)},
+		"Center": []float32{float32(width / 2), float32(height / 2)},
+	}
+	// radialBlurShaderOpts.Images[0] = baseImage
 
 	colormodShader, err := ebiten.NewShader(colormod_kage)
 	if err != nil {
@@ -916,14 +944,24 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		noteHeight:                 noteHeight,
 		noteTopBottomPaddingPixels: noteTopBottomPaddingPixels,
 		xTranslate:                 xTranslate,
-		shader:                     shader,
-		colormodShader:             colormodShader,
+
+		shader:               shader,
+		radialBlurShaderOpts: radialBlurShaderOpts,
+
+		colormodShader: colormodShader,
 
 		radialGradientShader:     radialGradientShader,
 		radialGradientShaderOpts: radialGradientShaderOpts,
 
 		player: p,
 	}
+
+	// m := 64
+	// m := 96
+	// m := 112
+	// m := 128
+
+	// game.seekToMeasure(m)
 
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
