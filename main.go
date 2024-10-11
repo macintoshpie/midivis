@@ -11,12 +11,14 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	_ "embed"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
@@ -249,13 +251,39 @@ type Game struct {
 	xTranslate     float64
 	shader         *ebiten.Shader
 	colormodShader *ebiten.Shader
+
+	playerPosition time.Duration
+	player         *audio.Player
 }
 
 func (g *Game) Update() error {
-	g.currentTick++
-	// convert screen render ticks (g.currentTick) to midi ticks
-	// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
-	g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
+	if g.player.IsPlaying() {
+		g.playerPosition = g.player.Position()
+		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.playerPosition.Milliseconds())/1000.0, microSecondsPerQuarterNote, ppqn)
+	} else {
+		// If not playing, just use ticks to track time
+		g.currentTick++
+		// convert screen render ticks (g.currentTick) to midi ticks
+		// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
+		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
+	}
+
+	// if right key just released, seek a bit
+	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+		err := g.seekToTime(g.playerPosition + 1*time.Second)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (g *Game) seekToTime(t time.Duration) error {
+	if err := g.player.SetPosition(t); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -796,7 +824,8 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	}
 
 	p.Play()
-	if err := ebiten.RunGame(&Game{
+
+	game := &Game{
 		currentTick:                0,
 		elapsedDeltaTime:           0,
 		tracks:                     tracks,
@@ -807,7 +836,10 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		xTranslate:                 xTranslate,
 		shader:                     shader,
 		colormodShader:             colormodShader,
-	}); err != nil {
+		player:                     p,
+	}
+
+	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
 }
