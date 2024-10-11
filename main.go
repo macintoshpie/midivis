@@ -18,6 +18,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"gitlab.com/gomidi/midi/v2/smf"
@@ -257,13 +258,15 @@ func (o *NoteRadialGradient) Draw(screen *ebiten.Image, g *Game) {
 		return
 	}
 
-	pctShow := (g.elapsedDeltaTime - o.on) / (o.off - o.on)
+	pctShow := float32(g.elapsedDeltaTime-o.on) / float32(o.off-o.on)
 	g.radialGradientShaderOpts.Uniforms["PctShow"] = 1 - pctShow
+	g.radialGradientShaderOpts.Uniforms["Color"] = []float32{float32(o.color.R), float32(o.color.G), float32(o.color.B), float32(o.color.A)}
 }
 
 type Game struct {
 	currentTick                int64
 	elapsedDeltaTime           int
+	playerMeasure              int
 	tracks                     []*Track
 	notes                      []Renderable
 	noteMin                    int
@@ -291,11 +294,15 @@ func (g *Game) Update() error {
 		// convert screen render ticks (g.currentTick) to midi ticks
 		// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
 		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
+
 	}
+
+	g.playerMeasure = g.elapsedDeltaTime / (ppqn * 4)
 
 	// if right key just released, seek a bit
 	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-		err := g.seekToTime(g.playerPosition + 1*time.Second)
+		// err := g.seekToTime(g.playerPosition + 1*time.Second)
+		err := g.seekToMeasure(g.playerMeasure + 1)
 
 		if err != nil {
 			return err
@@ -316,11 +323,22 @@ func (g *Game) seekToTime(t time.Duration) error {
 	return nil
 }
 
+func (g *Game) seekToMeasure(m int) error {
+	deltaTime := m * ppqn * 4
+	t := deltaTimeToSeconds(deltaTime, microSecondsPerQuarterNote, ppqn)
+	nanoSec := int64(t * 1000000000)
+	if err := g.seekToTime(time.Duration(nanoSec)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (g *Game) Draw(screen *ebiten.Image) {
 
-	noteImage := ebiten.NewImage(width, height)
+	baseImage := ebiten.NewImage(width, height)
 	for _, note := range g.notes {
-		note.Draw(noteImage, g)
+		note.Draw(baseImage, g)
 	}
 	cx, cy := ebiten.CursorPosition()
 	op := &ebiten.DrawRectShaderOptions{}
@@ -329,24 +347,27 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		"Cursor": []float32{float32(cx), float32(cy)},
 		"Center": []float32{float32(width / 2), float32(height / 2)},
 	}
-	op.Images[0] = noteImage
-	op.Images[1] = noteImage
-	op.Images[2] = noteImage
-	op.Images[3] = noteImage
+	op.Images[0] = baseImage
+	op.Images[1] = baseImage
+	op.Images[2] = baseImage
+	op.Images[3] = baseImage
 
-	// blurImage := ebiten.NewImage(width, height)
-	// blurImage.DrawRectShader(width, height, g.shader, op)
+	blurImage := ebiten.NewImage(width, height)
+	blurImage.DrawRectShader(width, height, g.shader, op)
 
 	// op.Images[0] = blurImage
 	// op.Images[1] = blurImage
 	// op.Images[2] = blurImage
 	// op.Images[3] = blurImage
 
-	screen.DrawRectShader(width, height, g.shader, op)
+	// screen.DrawRectShader(width, height, g.shader, op)
+
+	g.radialGradientShaderOpts.Images[0] = blurImage
 
 	screen.DrawRectShader(width, height, g.radialGradientShader, g.radialGradientShaderOpts)
 
-	// ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
+	measurePosition := g.elapsedDeltaTime / (ppqn * 4)
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("playerPosition: %d\nmeasurePosition: %d", g.playerPosition, measurePosition))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
@@ -683,6 +704,16 @@ func secondsToDeltaTime(elapsedTime float64, microSecondsPerQuarterNote int, ppq
 	return int(math.Round(deltaTime))
 }
 
+func deltaTimeToSeconds(deltaTime int, microSecondsPerQuarterNote int, ppqn int) float64 {
+	// Convert microseconds per quarter note to seconds per tick
+	secondsPerTick := float64(microSecondsPerQuarterNote) / (1000000.0 * float64(ppqn))
+
+	// Calculate elapsed time in seconds
+	elapsedTime := float64(deltaTime) * secondsPerTick
+
+	return elapsedTime
+}
+
 // func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
 // 	for _, note := range t.notes {
 // 		noteY := noteHeight * (note.num - noteMin)
@@ -781,8 +812,8 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	for trackIndex, t := range tracks {
 		// doScreen := false           // t.name == "./ag/introvocals.mid"
 		// doZoom := trackIndex%2 == 0 //"./ag/introvocals.mid" == t.name
-		// typeToUse := noteTypes[trackIndex%len(noteTypes)]
-		typeToUse := NoteTypeRadialGradient
+		typeToUse := noteTypes[trackIndex%len(noteTypes)]
+		// typeToUse := NoteTypeRadialGradient
 		colorsToUse := []color.RGBA{
 			colornames.Red,
 			colornames.Blue,
@@ -878,6 +909,7 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	game := &Game{
 		currentTick:                0,
 		elapsedDeltaTime:           0,
+		playerMeasure:              0,
 		tracks:                     tracks,
 		notes:                      notes,
 		noteMin:                    noteMin,

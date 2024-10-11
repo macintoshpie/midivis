@@ -1,0 +1,25 @@
+//kage:unit pixels
+package main
+
+var PctShow float
+var Color vec4
+
+func Fragment(dstPos vec4, srcPos vec2, _ vec4) vec4 {
+	dstNorm := (dstPos.xy - imageDstOrigin().xy) / imageDstSize().xy
+    pct := 0.0
+
+    // The DISTANCE from the pixel to the center
+    // tightenFactor is a multiplier to make the circle tighter
+    tightenFactor := 0.05
+    pct = distance(dstNorm,vec2(0.5))*tightenFactor
+    color := imageSrc0At(srcPos)
+    maskColor := Color
+
+    // don't render over already drawn things
+	if color != vec4(0) {
+		return color
+	}
+
+    // return color
+    return mix(color, maskColor, pct * PctShow)
+}
