@@ -30,6 +30,9 @@ var radialblur_kage []byte
 //go:embed colormod.kage
 var colormod_kage []byte
 
+//go:embed radialgradient.kage
+var radialgradient_kage []byte
+
 const width = 1024
 const height = 768
 
@@ -91,13 +94,15 @@ const (
 	NoteTypeScreen
 	NoteTypeMeter
 	NoteTypeZoom
+	NoteTypeRadialGradient
 )
 
-var noteTypes = [4]int{
+var noteTypes = []int{
 	NoteTypeRect,
 	NoteTypeScreen,
 	NoteTypeMeter,
 	NoteTypeZoom,
+	NoteTypeRadialGradient,
 }
 
 type RenderableNoteBase struct {
@@ -122,6 +127,11 @@ type NoteMeter struct {
 }
 
 type NoteZoom struct {
+	RenderableNoteBase
+	color *color.RGBA
+}
+
+type NoteRadialGradient struct {
 	RenderableNoteBase
 	color *color.RGBA
 }
@@ -239,6 +249,18 @@ func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
 	}
 }
 
+func (o *NoteRadialGradient) Draw(screen *ebiten.Image, g *Game) {
+	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
+	alreadyHandled := false // g.radialGradientShaderOpts.Uniforms["PctShow"] != 0
+
+	if !isBeingPlayed || alreadyHandled {
+		return
+	}
+
+	pctShow := (g.elapsedDeltaTime - o.on) / (o.off - o.on)
+	g.radialGradientShaderOpts.Uniforms["PctShow"] = 1 - pctShow
+}
+
 type Game struct {
 	currentTick                int64
 	elapsedDeltaTime           int
@@ -251,6 +273,9 @@ type Game struct {
 	xTranslate     float64
 	shader         *ebiten.Shader
 	colormodShader *ebiten.Shader
+
+	radialGradientShader     *ebiten.Shader
+	radialGradientShaderOpts *ebiten.DrawRectShaderOptions
 
 	playerPosition time.Duration
 	player         *audio.Player
@@ -276,6 +301,9 @@ func (g *Game) Update() error {
 			return err
 		}
 	}
+
+	// reset some uniforms
+	g.radialGradientShaderOpts.Uniforms["PctShow"] = 0
 
 	return nil
 }
@@ -315,6 +343,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// op.Images[3] = blurImage
 
 	screen.DrawRectShader(width, height, g.shader, op)
+
+	screen.DrawRectShader(width, height, g.radialGradientShader, g.radialGradientShaderOpts)
 
 	// ebitenutil.DebugPrint(screen, fmt.Sprintf("ticks: %d\ndt: %d\nnheight: %d", g.currentTick, g.elapsedDeltaTime, g.noteHeight))
 }
@@ -751,7 +781,8 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	for trackIndex, t := range tracks {
 		// doScreen := false           // t.name == "./ag/introvocals.mid"
 		// doZoom := trackIndex%2 == 0 //"./ag/introvocals.mid" == t.name
-		typeToUse := noteTypes[trackIndex%len(noteTypes)]
+		// typeToUse := noteTypes[trackIndex%len(noteTypes)]
+		typeToUse := NoteTypeRadialGradient
 		colorsToUse := []color.RGBA{
 			colornames.Red,
 			colornames.Blue,
@@ -784,6 +815,15 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 			} else if typeToUse == NoteTypeZoom {
 				z := -1
 				notes = append(notes, &NoteZoom{
+					RenderableNoteBase: RenderableNoteBase{
+						Note: note,
+						z:    z,
+					},
+					color: &chosenColor,
+				})
+			} else if typeToUse == NoteTypeRadialGradient {
+				z := 0
+				notes = append(notes, &NoteRadialGradient{
 					RenderableNoteBase: RenderableNoteBase{
 						Note: note,
 						z:    z,
@@ -823,6 +863,16 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		log.Fatal(err)
 	}
 
+	radialGradientShader, err := ebiten.NewShader(radialgradient_kage)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	radialGradientShaderOpts := &ebiten.DrawRectShaderOptions{}
+	radialGradientShaderOpts.Uniforms = map[string]interface{}{
+		"PctShow": 0,
+	}
+
 	p.Play()
 
 	game := &Game{
@@ -836,7 +886,11 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		xTranslate:                 xTranslate,
 		shader:                     shader,
 		colormodShader:             colormodShader,
-		player:                     p,
+
+		radialGradientShader:     radialGradientShader,
+		radialGradientShaderOpts: radialGradientShaderOpts,
+
+		player: p,
 	}
 
 	if err := ebiten.RunGame(game); err != nil {
