@@ -251,7 +251,7 @@ func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
 
 func (o *NoteRadialGradient) Draw(screen *ebiten.Image, g *Game) {
 	isBeingPlayed := o.on <= g.elapsedDeltaTime && g.elapsedDeltaTime <= o.off
-	alreadyHandled := false // g.radialGradientShaderOpts.Uniforms["PctShow"] != 0
+	alreadyHandled := g.radialGradientShaderOpts.Uniforms["PctShow"] != 0
 
 	if !isBeingPlayed || alreadyHandled {
 		return
