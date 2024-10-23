@@ -25,34 +25,22 @@ import (
 	"golang.org/x/image/colornames"
 )
 
-//go:embed radialblur.kage
+//go:embed shaders/radialblur.kage
 var radialblur_kage []byte
 
-//go:embed colormod.kage
+//go:embed shaders/colormod.kage
 var colormod_kage []byte
 
-//go:embed radialgradient.kage
+//go:embed shaders/radialgradient.kage
 var radialgradient_kage []byte
 
 const width = 1024
 const height = 768
 
-// PPQN is the number of ticks per quarter note
-// hardcoded for now, but we can get from midi header (division)
-// IDL
-const ppqn = 96
-
-// Sonata
-// const ppqn = 384
-
-// Hardcoded for now, but we can get from midi as a tempo type event
-// IDL
+// TODO: Hardcoded for now, but we can get from midi as a tempo type event
 const microSecondsPerQuarterNote = 375000
 
-// Sonata
-// const microSecondsPerQuarterNote = 465000 // was originally 500000 but messed with it to get close to matching https://www.youtube.com/watch?v=OJ1p6hD-Df0
-
-const debug = true
+const debug = false
 
 type MidiNoteType byte
 
@@ -71,6 +59,9 @@ type MidiNote struct {
 
 type MidiTrack struct {
 	notes []MidiNote
+	// PPQN is the number of ticks per quarter note
+	// It is pulled from midi header (division)
+	ppqn uint16
 }
 
 type Note struct {
@@ -83,6 +74,7 @@ type Note struct {
 
 type Track struct {
 	name  string
+	ppqn  uint16
 	bpm   int
 	notes []Note
 }
@@ -103,6 +95,7 @@ var noteTypes = []int{
 	NoteTypeRadialGradient,
 }
 
+// Map midi files to animation types
 var fileNameToType = map[string]int{
 	"ah.mid":                NoteTypeRadialGradient,
 	"bridgevocalbottom.mid": NoteTypeRect,
@@ -129,27 +122,32 @@ type RenderableNoteBase struct {
 	z int // z-index, used for rendering order
 }
 
+// NoteRect animates a rectangle across the screen during play
 type NoteRect struct {
 	RenderableNoteBase
 	xScale float64
 	color  *color.RGBA
 }
 
+// NoteScreen fills entire screen with color during play
 type NoteScreen struct {
 	RenderableNoteBase
 	color *color.RGBA
 }
 
+// NoteMeter animates a rectangle from left to right during play filling screen
 type NoteMeter struct {
 	RenderableNoteBase
 	color *color.RGBA
 }
 
+// NoteZoom animates a rectangle from center to full width during play
 type NoteZoom struct {
 	RenderableNoteBase
 	color *color.RGBA
 }
 
+// NoteRadialGradient animates a radial gradient from center to full width during play
 type NoteRadialGradient struct {
 	RenderableNoteBase
 	color *color.RGBA
@@ -200,7 +198,7 @@ func (o *NoteScreen) Draw(screen *ebiten.Image, g *Game) {
 
 func (o *NoteMeter) Draw(screen *ebiten.Image, g *Game) {
 	// zoom in from small to large, filling up width of screen when being played
-	deltaThreshold := ppqn
+	deltaThreshold := g.ppqn
 
 	// hasn't started
 	if o.on-deltaThreshold > g.elapsedDeltaTime {
@@ -232,7 +230,7 @@ func (o *NoteMeter) Draw(screen *ebiten.Image, g *Game) {
 
 func (o *NoteZoom) Draw(screen *ebiten.Image, g *Game) {
 	// zoom in from small to large, filling up width of screen when being played
-	deltaThreshold := ppqn * 2
+	deltaThreshold := g.ppqn * 2
 
 	// hasn't started
 	if o.on-deltaThreshold > g.elapsedDeltaTime {
@@ -288,13 +286,13 @@ type Game struct {
 	currentTick                int64
 	elapsedDeltaTime           int
 	playerMeasure              int
+	ppqn                       int
 	tracks                     []*Track
 	notes                      []Renderable
 	noteMin                    int
 	noteHeight                 int
 	noteTopBottomPaddingPixels int
-	// xScale                     float64
-	xTranslate float64
+	xTranslate                 float64
 
 	shader               *ebiten.Shader
 	radialBlurShaderOpts *ebiten.DrawRectShaderOptions
@@ -311,21 +309,20 @@ type Game struct {
 func (g *Game) Update() error {
 	if g.player.IsPlaying() {
 		g.playerPosition = g.player.Position()
-		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.playerPosition.Milliseconds())/1000.0, microSecondsPerQuarterNote, ppqn)
+		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.playerPosition.Milliseconds())/1000.0, microSecondsPerQuarterNote, g.ppqn)
 	} else {
 		// If not playing, just use ticks to track time
 		g.currentTick++
 		// convert screen render ticks (g.currentTick) to midi ticks
 		// Each screen tick is assumed to be 1/60th of a second, probably need to fix this later
-		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, ppqn)
+		g.elapsedDeltaTime = secondsToDeltaTime(float64(g.currentTick)*(1.0/60.0), microSecondsPerQuarterNote, g.ppqn)
 
 	}
 
-	g.playerMeasure = g.elapsedDeltaTime / (ppqn * 4)
+	g.playerMeasure = g.elapsedDeltaTime / (g.ppqn * 4)
 
 	// if right key just released, seek a bit
 	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-		// err := g.seekToTime(g.playerPosition + 1*time.Second)
 		err := g.seekToMeasure(g.playerMeasure + 1)
 
 		if err != nil {
@@ -339,12 +336,11 @@ func (g *Game) Update() error {
 	cx, cy := ebiten.CursorPosition()
 	g.radialBlurShaderOpts.Uniforms["Time"] = float32(g.currentTick) / 60
 	g.radialBlurShaderOpts.Uniforms["Cursor"] = []float32{float32(cx), float32(cy)}
-	// would be cool to "lerp" between the current center and last center... but idk how to do right now
-	// g.radialBlurShaderOpts.Uniforms["Center"] = []float32{float32(width / 2), float32(height / 2)}
 
 	return nil
 }
 
+// seekToTime seeks to a specific time in the audio file
 func (g *Game) seekToTime(t time.Duration) error {
 	if err := g.player.SetPosition(t); err != nil {
 		return err
@@ -353,9 +349,10 @@ func (g *Game) seekToTime(t time.Duration) error {
 	return nil
 }
 
+// seekToMeasure seeks to a specific measure in the audio file
 func (g *Game) seekToMeasure(m int) error {
-	deltaTime := m * ppqn * 4
-	t := deltaTimeToSeconds(deltaTime, microSecondsPerQuarterNote, ppqn)
+	deltaTime := m * g.ppqn * 4
+	t := deltaTimeToSeconds(deltaTime, microSecondsPerQuarterNote, g.ppqn)
 	nanoSec := int64(t * 1000000000)
 	if err := g.seekToTime(time.Duration(nanoSec)); err != nil {
 		return err
@@ -375,18 +372,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	blurImage.DrawRectShader(width, height, g.shader, g.radialBlurShaderOpts)
 
 	g.radialBlurShaderOpts.Images[0] = baseImage
-	// op.Images[0] = blurImage
-	// op.Images[1] = blurImage
-	// op.Images[2] = blurImage
-	// op.Images[3] = blurImage
-
-	// screen.DrawRectShader(width, height, g.shader, op)
-
 	g.radialGradientShaderOpts.Images[0] = blurImage
 
 	screen.DrawRectShader(width, height, g.radialGradientShader, g.radialGradientShaderOpts)
 
-	measurePosition := g.elapsedDeltaTime / (ppqn * 4)
+	measurePosition := g.elapsedDeltaTime / (g.ppqn * 4)
 	ebitenutil.DebugPrint(screen, fmt.Sprintf("playerPosition: %d\nmeasurePosition: %d", g.playerPosition, measurePosition))
 }
 
@@ -439,22 +429,25 @@ func NewMidiTrack() *MidiTrack {
 
 	return &MidiTrack{
 		notes: []MidiNote{},
+		ppqn:  0,
 	}
 }
 
-func NewTrack(fileName string) *Track {
+func NewTrack(fileName string, ppqn uint16) *Track {
 
 	return &Track{
 		name:  path.Base(fileName),
 		notes: []Note{},
+		ppqn:  ppqn,
 	}
 }
 
-func diy(logger *slog.Logger, fileName string) *Track {
+func parseMidiFile(logger *slog.Logger, fileName string) *MidiTrack {
 	// Reference: https://midimusic.github.io/tech/midispec.html
 	dat, err := os.Open(fileName)
 	check(err)
-	// logger.Info(string(dat))
+	defer dat.Close()
+	midiTrack := NewMidiTrack()
 
 	// first 4 bytes (32 bits) are the header type in ascii
 	headerBytes := make([]byte, 4)
@@ -495,11 +488,10 @@ func diy(logger *slog.Logger, fileName string) *Track {
 	if divisionTypeBytes[0]&0x80 == 0 {
 		division := binary.BigEndian.Uint16(divisionTypeBytes)
 		logger.Info("Division (Ticks per Quarter Note):", division)
+		midiTrack.ppqn = division
 	} else {
 		// just panic for now
 		panic("Division Type not supported")
-		// division := binary.BigEndian.Uint16(dat[12:14])
-		// logger.Info("Division (Ticks per Frame):", division)
 	}
 
 	// -- Track Section --
@@ -526,7 +518,6 @@ func diy(logger *slog.Logger, fileName string) *Track {
 	// <event> = <MIDI event> | <sysex event> | <meta-event>
 	// Print only note on and note offf midi events and their data as well as delta time events
 	// eventsRemaining := 6
-	midiTrack := NewMidiTrack()
 	done := false
 	for !done {
 		// eventsRemaining--
@@ -685,7 +676,11 @@ func diy(logger *slog.Logger, fileName string) *Track {
 		}
 	}
 
-	track := NewTrack(fileName)
+	return midiTrack
+}
+
+func (midiTrack *MidiTrack) ToTrack(logger *slog.Logger, fileName string) *Track {
+	track := NewTrack(fileName, midiTrack.ppqn)
 	deltaTotal := 0
 	noteOnMap := make(map[byte]Note)
 	for _, midiNote := range midiTrack.notes {
@@ -734,43 +729,8 @@ func deltaTimeToSeconds(deltaTime int, microSecondsPerQuarterNote int, ppqn int)
 	return elapsedTime
 }
 
-// func renderTrack(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
-// 	for _, note := range t.notes {
-// 		noteY := noteHeight * (note.num - noteMin)
-// 		// flip b/c we draw from upper left corner
-// 		noteY = height - noteY
-
-// 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
-
-// 		noteX := float32(note.on-elapsedDeltaTime)*float32(xScale) + float32(xTranslate)
-// 		noteWidth := float32(note.off-note.on) * float32(xScale)
-// 		if isBeingPlayed {
-// 			vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
-// 		} else {
-// 			strokeWidth := float32(1)
-// 			vector.StrokeRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), strokeWidth, colornames.White, true)
-// 		}
-// 	}
-// }
-
-// func renderTrack2(t *Track, screen *ebiten.Image, elapsedDeltaTime int, noteMin int, noteHeight int, noteTopBottomPaddingPixels int, xScale float64, xTranslate float64, foregroundColor color.RGBA) {
-// 	for _, note := range t.notes {
-// 		isBeingPlayed := note.on <= elapsedDeltaTime && elapsedDeltaTime <= note.off
-// 		if !isBeingPlayed {
-// 			continue
-// 		}
-
-// 		screen.Fill(colornames.Green)
-
-// 		// timePlayed := elapsedDeltaTime - note.on
-// 		// vector.DrawFilledRect(screen, noteX, float32(noteY), noteWidth, float32(noteHeight), foregroundColor, true)
-
-//		}
-//	}
+// startRender starts the rendering loop
 func startRender(tracks []*Track, logger *slog.Logger) {
-
-	const oscillateColors = false
-
 	// Use noteTopBottomPaddingPixels to adjust the padding at the top and bottom of screen for notes
 	const noteTopBottomPaddingPixels = 50
 
@@ -803,6 +763,7 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	const xTranslate = width / 2
 
 	// Setup audio player
+	// TODO: hardcoded for now...
 	const sampleRate = 44100
 	audioContext := audio.NewContext(sampleRate)
 
@@ -822,22 +783,17 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	ebiten.SetWindowTitle("Hello, World!")
 	notes := make([]Renderable, 0)
 	for trackIndex, t := range tracks {
-		// doScreen := false           // t.name == "./ag/introvocals.mid"
-		// doZoom := trackIndex%2 == 0 //"./ag/introvocals.mid" == t.name
-		// typeToUse := noteTypes[trackIndex%len(noteTypes)]
 		typeToUse, ok := fileNameToType[t.name]
 		if !ok {
 			logger.Info("Using default note type", "trackName", t.name)
 			typeToUse = NoteTypeRect
 		}
-		// typeToUse := NoteTypeRadialGradient
 		colorsToUse := []color.RGBA{
 			colornames.Red,
 			colornames.Blue,
 			colornames.Green,
 			colornames.Yellow,
 			colornames.Purple,
-			// colornames.Cyan,
 			colornames.White,
 		}
 		chosenColor := colorsToUse[trackIndex%len(colorsToUse)]
@@ -911,7 +867,6 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		"Cursor": []float32{float32(0), float32(0)},
 		"Center": []float32{float32(width / 2), float32(height / 2)},
 	}
-	// radialBlurShaderOpts.Images[0] = baseImage
 
 	colormodShader, err := ebiten.NewShader(colormod_kage)
 	if err != nil {
@@ -931,9 +886,11 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 	p.Play()
 
 	game := &Game{
-		currentTick:                0,
-		elapsedDeltaTime:           0,
-		playerMeasure:              0,
+		currentTick:      0,
+		elapsedDeltaTime: 0,
+		playerMeasure:    0,
+		// Assuming all tracks are the same ppqn...
+		ppqn:                       int(tracks[0].ppqn),
 		tracks:                     tracks,
 		notes:                      notes,
 		noteMin:                    noteMin,
@@ -978,8 +935,8 @@ func main() {
 		}
 
 		filePath := fmt.Sprintf("./ag/%s", file.Name())
-		track := diy(logger, filePath)
-		tracks = append(tracks, track)
+		midiTrack := parseMidiFile(logger, filePath)
+		tracks = append(tracks, midiTrack.ToTrack(logger, file.Name()))
 	}
 
 	startRender(tracks, logger)
