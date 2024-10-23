@@ -377,7 +377,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	screen.DrawRectShader(width, height, g.radialGradientShader, g.radialGradientShaderOpts)
 
 	measurePosition := g.elapsedDeltaTime / (g.ppqn * 4)
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("playerPosition: %d\nmeasurePosition: %d", g.playerPosition, measurePosition))
+	if debug {
+		ebitenutil.DebugPrint(screen, fmt.Sprintf("playerPosition: %d\nmeasurePosition: %d", g.playerPosition, measurePosition))
+	}
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
