@@ -22,7 +22,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
-	"gitlab.com/gomidi/midi/v2/smf"
 	"golang.org/x/image/colornames"
 )
 
@@ -37,9 +36,6 @@ var radialgradient_kage []byte
 
 const width = 1024
 const height = 768
-
-// const midiFileName = "IDL main loop.mid"
-const midiFileName = "sonatas_k-417_(c)sankey.mid"
 
 // PPQN is the number of ticks per quarter note
 // hardcoded for now, but we can get from midi header (division)
@@ -956,31 +952,8 @@ func startRender(tracks []*Track, logger *slog.Logger) {
 		player: p,
 	}
 
-	// m := 64
-	// m := 96
-	// m := 112
-	// m := 128
-
-	// game.seekToMeasure(m)
-
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
-	}
-}
-
-func pkg() {
-	reader, err := smf.ReadFile(midiFileName)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Number of tracks:", reader.NumTracks())
-	for index, track := range reader.Tracks {
-		fmt.Println("Track", index)
-		fmt.Println("Number of events:", len(track))
-		for _, ev := range track {
-			fmt.Println(ev.Delta, ev)
-		}
 	}
 }
 
@@ -992,29 +965,22 @@ func main() {
 	loggerOpts := &slog.HandlerOptions{Level: loggerLevel}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, loggerOpts))
 
-	argsWithoutProg := os.Args[1:]
-	if len(argsWithoutProg) == 0 || argsWithoutProg[0] == "pkg" {
-		pkg()
-	} else if argsWithoutProg[0] == "diy" {
-		tracks := make([]*Track, 0)
+	tracks := make([]*Track, 0)
 
-		files, err := os.ReadDir("./ag")
-		if err != nil {
-			panic(err)
-		}
-
-		for _, file := range files {
-			if file.IsDir() || !strings.HasSuffix(file.Name(), ".mid") {
-				continue
-			}
-
-			filePath := fmt.Sprintf("./ag/%s", file.Name())
-			track := diy(logger, filePath)
-			tracks = append(tracks, track)
-		}
-
-		startRender(tracks, logger)
-	} else {
-		fmt.Println("Invalid command")
+	files, err := os.ReadDir("./ag")
+	if err != nil {
+		panic(err)
 	}
+
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".mid") {
+			continue
+		}
+
+		filePath := fmt.Sprintf("./ag/%s", file.Name())
+		track := diy(logger, filePath)
+		tracks = append(tracks, track)
+	}
+
+	startRender(tracks, logger)
 }
